@@ -1,0 +1,19 @@
+Order of operations:
+
+Run initial flash test:
+1. run_flash_test_visuals.m
+2. white_flash_analysis.m
+
+Run retinotopic mapping:
+1. run_retinotopic_mapping_stimulus.m
+2. compute_retino_maps.m
+3. generate_retino_mask.m
+4. generate_retino_mask.m
+
+
+stim parameter survey:
+1. run_wf_ephys_stim_param_survey.m
+2. extract_nev_stim_and_camera.m
+Analyses done:
+1. current_thresholding_analysis.m
+2. dff_over_time_analysis.m
