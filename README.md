@@ -1,4 +1,4 @@
-# Neurostim Mapping MATLAB Pipeline
+# Luan Lab - Widefield experiment scripts and Stimulation + Widefield alignment code
 
 This repository contains MATLAB scripts for running widefield imaging experiments, retinotopic mapping, stimulation parameter surveys, and downstream analysis of cortical responses.
 
