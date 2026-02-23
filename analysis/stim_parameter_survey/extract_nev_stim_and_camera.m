@@ -12,6 +12,14 @@ is_ok = @(r) (isnumeric(r) && all(r(:)==0)) || ...
              (ischar(r)   && strcmpi(strtrim(r),'ns_OK')) || ...
              (isstring(r) && strcmpi(strtrim(r),"ns_OK"));
 
+mouse_id = string(input('Mouse ID (e.g., LGN11): ', 's'));
+experiment_id = string(input('Experiment ID (e.g., WF_StimSurvey_20260210): ', 's'));
+
+base_name = string(input('Base name (e.g., nev_timing): ', 's'));
+if strlength(base_name)==0
+    base_name = "dio_stim_timing";
+end
+
 %% =========================
 % 1) CAMERA TTL (Reason = "SMA 1") -> frame_times_s
 %% =========================
