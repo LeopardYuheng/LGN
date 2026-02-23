@@ -1,4 +1,4 @@
-function retinotopicMappingStimulus_modifR60Hz()
+% function retinotopicMappingStimulus_modifR60Hz()
 % RETINOTOPICMAPPINGSTIMULUS_MODIFR60HZ
 % Beta retinotopic mapping code
 % Written by KS on 180123
