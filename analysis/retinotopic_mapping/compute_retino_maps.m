@@ -1,102 +1,170 @@
+%% retinotopic_mapping_pipeline_reusable_outputs.m
+% Retinotopic mapping pipeline with:
+%   1) reusable saved output struct
+%   2) QC figures
+%   3) explicit ReferenceImage saving
+%   4) optional V1 mask drawing/saving
+%
+% Main output:
+%   retino_session_output.mat   containing struct "out"
+%
+% QC outputs:
+%   qc/peak_detection.png
+%   qc/peak_detection_with_detected_peaks.png
+%   qc/trial_length_histogram.png
+%   qc/reference_image.png
+%   qc/azimuth_map.png
+%   qc/elevation_map.png
+%   qc/signmap_overlay.png
+%   qc/V1_mask_overlay.png
+%
+% Notes:
+% - Keeps your first image as the ReferenceImage
+% - Keeps your existing SignMapper workflow
+% - Packages outputs for later registration to stimulation sessions
+
 %% Clear Environment and Add Paths
-close all;                % Close any open figure windows
-clear;                    % Clear workspace variables
-addpath(genpath('C:\Data_processing'));  % Add all subdirectories from Data_processing
+close all;
+clear;
+clc;
+addpath(genpath('C:\Users\LuanLab\OneDrive - Rice University\Documents\GitHub\Luan_lab_retinomap-pipeline\analysis\retinotopic_mapping\rm_functions'));
 
-%% Load Intan RHD Data
-% Get list of .rhd files in the current folder
-DIR = dir('*.rhd');
+%% -------------------- USER SETTINGS --------------------
+DRAW_V1_MASK = true;              % draw V1 mask at end if not already available
+SAVE_AVERAGE_VIDEOS = true;       % save mp4 videos of averaged responses
+PEAK_MIN_HEIGHT = -3.5;
+PEAK_MIN_DISTANCE = 70000;
+BASELINE_SECONDS = 2;             % seconds before on period
+ORIENTATION_ORDER = {'azi_f','azi_b','alt_u','alt_d'};  % assumed trial order
 
-% Preallocate cell arrays for digital input data and time stamps
+%% -------------------- SELECT INPUT / OUTPUT FOLDERS --------------------
+% Folder containing RHD files
+rhdFolder = uigetdir(pwd, 'Select folder containing Intan .rhd files');
+if isequal(rhdFolder,0)
+    error('No RHD folder selected.');
+end
+
+% Folder containing widefield images
+imgFolder = uigetdir(pwd, 'Select folder containing imaging .tif files');
+if isequal(imgFolder,0)
+    error('No image folder selected.');
+end
+
+% Output folder
+saveFolder = uigetdir(pwd, 'Select folder where outputs should be saved');
+if isequal(saveFolder,0)
+    error('No output folder selected.');
+end
+
+if ~exist(saveFolder,'dir')
+    mkdir(saveFolder);
+end
+
+qcDir = fullfile(saveFolder,'qc');
+if ~exist(qcDir,'dir')
+    mkdir(qcDir);
+end
+
+%% -------------------- LOAD INTAN RHD DATA --------------------
+DIR = dir(fullfile(rhdFolder,'*.rhd'));
+assert(~isempty(DIR), 'No .rhd files found in current folder.');
+
 numFiles = numel(DIR);
 recFile = cell(1, numFiles);
 tIntan  = cell(1, numFiles);
 
 for i = 1:numFiles
-    % Read the Intan RHD2000 data file. This should load board_dig_in_data and t_dig.
-    read_Intan_RHD2000_fileV3(DIR(i).name, []);
+    read_Intan_RHD2000_fileV3(fullfile(rhdFolder, DIR(i).name), []);
     recFile{1, i} = board_dig_in_data;
     tIntan{1, i}  = t_dig;
 end
 
-% Concatenate digital input data across files and save the results
 recFile = cat(2, recFile{:});
-save('DIN.mat', 'recFile', 'tIntan', 'frequency_parameters', '-v7.3');
+save(fullfile(saveFolder, 'DIN.mat'), 'recFile', 'tIntan', 'frequency_parameters', '-v7.3');
 
-%% Process Diode Pulse Data
-% Sampling rate from Intan frequency parameters
 Fs = frequency_parameters.amplifier_sample_rate;
 
-% Find rising edges in the first row of recFile (positive transitions)
+%% -------------------- PROCESS PHOTODIODE PULSES --------------------
 t_rising_edge_diode = find(diff(recFile(1, :)) > 0);
-% Compute inter-pulse intervals (in samples)
 inter_pulse_interval_diode = diff(t_rising_edge_diode);
 
-%% Detect Screen Flashing Points
-% Define time (and amplitude inversion) for display purposes
 pd_t = t_rising_edge_diode(1:end-1);
-pd = -inter_pulse_interval_diode;
+pd   = -inter_pulse_interval_diode;
 
-% Plot the original signal of rising edge intervals
-figure;
+fig1 = figure('Color','w');
 plot(pd_t, pd, 'b', 'LineWidth', 1);
 title('Original Signal');
-xlabel('Time');
+xlabel('Time (samples)');
 ylabel('Amplitude');
 grid on;
+saveas(fig1, fullfile(qcDir, 'peak_detection.png'));
 
-%% Find Peaks in the Signal
-% Detect peaks with a given minimum height and minimum distance between them
-% [pks, locs] = findpeaks(pd, pd_t, 'MinPeakHeight', -5, 'MinPeakDistance', 30000);
-[pks, locs] = findpeaks(pd, pd_t, 'MinPeakHeight', -3.5, 'MinPeakDistance', 70000);
-figure;
+[pks, locs] = findpeaks(pd, pd_t, ...
+    'MinPeakHeight', PEAK_MIN_HEIGHT, ...
+    'MinPeakDistance', PEAK_MIN_DISTANCE);
+
+fig2 = figure('Color','w');
 plot(pd_t, pd, 'b-'); hold on;
 plot(locs, pks, 'ro', 'MarkerFaceColor', 'r');
-hold off;
 ylabel('Amplitude');
-title('Detected Peaks');
+xlabel('Time (samples)');
+title(sprintf('Detected Peaks (n = %d)', length(pks)));
+grid on;
+saveas(fig2, fullfile(qcDir, 'peak_detection_with_detected_peaks.png'));
+
 disp(['Number of peaks detected: ', num2str(length(pks))]);
-save('peaks.mat', 'locs');
+save(fullfile(saveFolder, 'peaks.mat'), 'locs', 'pks');
 
-
-%% Define Stimulus Trials and Peak Intervals
-% Assume locs contains alternating start and end times of stimuli
+%% -------------------- DEFINE TRIALS --------------------
 TrialsStart = locs(1:2:end);
 TrialsEnd   = locs(2:2:end);
 
-% TrialsStart = locs;
-peakIntervals = diff(TrialsStart)/Fs;
+numTrials = numel(TrialsStart);
+assert(numTrials > 0, 'No trials detected.');
+assert(mod(numTrials,4)==0, 'Number of detected trials is not divisible by 4. Check trial parsing/order.');
 
-% Plot the histogram of the inter-trial intervals
-figure;
-histogram(peakIntervals,BinWidth=0.002);
+peakIntervals = diff(TrialsStart) / Fs;
+
+fig3 = figure('Color','w');
+histogram(peakIntervals, 'BinWidth', 0.002);
 xlabel('Interval between Peaks (s)');
 ylabel('Frequency');
-title('Distribution of Trial length');
+title('Distribution of Trial Length');
+grid on;
+saveas(fig3, fullfile(qcDir, 'trial_length_histogram.png'));
 
-%% Load Stimulus Data
+%% -------------------- LOAD STIMULUS DATA --------------------
 [fn, fp] = uigetfile('*.mat', 'Select the Stimulus Data MAT File');
-load(fullfile(fp, fn));  % Loads a variable (or variables) from the chosen file
+if isequal(fn,0)
+    error('No stimulus MAT file selected.');
+end
+stimMatPath = fullfile(fp, fn);
+load(stimMatPath);
 
-%% Validate Image Count Versus Rising Edges
-% Determine camera rising and falling edges from channel 2 of recFile
+assert(exist('Stimdata','var')==1, 'Stimdata variable not found in selected MAT file.');
+
+%% -------------------- CAMERA TRIGGERS --------------------
 camera_diff    = diff(recFile(2, :));
 camera_rising  = find(camera_diff > 0);
 camera_falling = find(camera_diff < 0);
-camera_indicator = camera_falling;  % Using falling edges as the indicator
+camera_indicator = camera_falling;
 
-% Estimate camera sampling rate using rising edge intervals
 camera_sampling_rate = round(1 / (mean(diff(camera_rising)) / Fs));
 disp(['Camera sampling rate: ', num2str(camera_sampling_rate)]);
 
 num_rising_edges = length(camera_indicator);
-disp(['Number of rising edges: ', num2str(num_rising_edges)]);
+disp(['Number of camera edges: ', num2str(num_rising_edges)]);
 
-% Ask user to select the folder containing the images
+%% -------------------- LOAD IMAGE FILES --------------------
 folder_path = uigetdir(pwd, 'Select Corresponding Image Folder');
-% Get and sort image files (expecting *.tif filenames with numeric tokens)
+if isequal(folder_path,0)
+    error('No image folder selected.');
+end
+
 image_files = dir(fullfile(folder_path, '*.tif'));
 nFiles = numel(image_files);
+assert(nFiles > 0, 'No tif images found in selected image folder.');
+
 fileNumbers = zeros(nFiles, 1);
 for i = 1:nFiles
     tokens = regexp(image_files(i).name, '_([0-9]+)\.tif$', 'tokens');
@@ -109,303 +177,419 @@ end
 [~, sortedIdx] = sort(fileNumbers);
 image_files = image_files(sortedIdx);
 n_images = length(image_files);
+
 disp(['Number of images: ', num2str(n_images)]);
 
 if num_rising_edges == n_images
-    disp('Rising edge and image count match.');
+    disp('Camera edge count and image count match.');
 else
-    disp('Mismatch between rising edges and image count.');
-    response = questdlg('Rising edge and image count mismatch. Continue anyway?', ...
+    warning('Mismatch between camera edges (%d) and image count (%d).', num_rising_edges, n_images);
+    response = questdlg('Camera edge and image count mismatch. Continue anyway?', ...
         'Mismatch Warning', 'Yes', 'No', 'No');
     if strcmp(response, 'No')
-        return;
+        error('User stopped due to image/trigger mismatch.');
     end
 end
 
-%% Compute On and Off Indices for Each Trial
-numTrials = numel(TrialsStart);
-% numTrials = floor(numTrials / 4) * 4;
+%% -------------------- COMPUTE ON/OFF INDICES --------------------
+on_time   = Stimdata.on_time;
+on_frames = round(on_time * camera_sampling_rate);
 
 on_indices_trial  = cell(numTrials, 1);
 off_indices_trial = cell(numTrials, 1);
 
-% Define the number of frames per stimulus-on period
-on_time   = Stimdata.on_time;  % from the loaded stimulus data
-on_frames = on_time * camera_sampling_rate;
-
-% Compute on-indices for each trial: choose the smallest camera_indicator value greater than TrialsStart(i)
 for i = 1:numTrials
-    %onIndex = find((camera_indicator > TrialsStart(i)) & (camera_indicator <= TrialsEnd(i)));
-    %for some old data
-    onIndex = find((camera_indicator > TrialsStart(i)));
+    onIndex = find(camera_indicator > TrialsStart(i));
+    assert(~isempty(onIndex), 'Could not find camera index after trial start for trial %d.', i);
     onStartIndex = onIndex(1);
     on_indices_trial{i} = onStartIndex : (onStartIndex + on_frames - 1);
 end
 
-% Define off-period frames using a duration (in seconds) preceding the on period
-before_second = 2;  % seconds
-off_frames = before_second * camera_sampling_rate;
+off_frames = round(BASELINE_SECONDS * camera_sampling_rate);
+
 for i = 1:numTrials
     onStartIndex = on_indices_trial{i}(1);
     off_indices_trial{i} = (onStartIndex - off_frames) : (onStartIndex - 1);
+
+    if off_indices_trial{i}(1) < 1
+        error('Off-period for trial %d goes below frame 1. Increase pre-roll or inspect triggers.', i);
+    end
+    if on_indices_trial{i}(end) > n_images
+        error('On-period for trial %d exceeds available image count.', i);
+    end
 end
 
-%% Get Image Size from the Last Image
-firstFile = image_files(end);
-fullPath = fullfile(firstFile.folder, firstFile.name);
-first_img = imread(fullPath);
-info = imfinfo(fullPath);
+%% -------------------- REFERENCE IMAGE --------------------
+firstFile = image_files(1);
+refPath = fullfile(firstFile.folder, firstFile.name);
+ReferenceImage = imread(refPath);
+
+info = imfinfo(refPath);
 width  = info(1).Width;
 height = info(1).Height;
 fprintf('Image size is %d (height) x %d (width)\n', height, width);
 
-%% Separate Orientation Images into Repeats
-% Assumption: Every 4 trials correspond to front, back, up, and down orientations.
+figRef = figure('Color','w');
+imagesc(ReferenceImage); axis image off; colormap gray;
+title('Reference Image');
+saveas(figRef, fullfile(qcDir, 'reference_image.png'));
+
+%% -------------------- SEPARATE ORIENTATIONS --------------------
 repeats = numTrials / 4;
 
-% Preallocate arrays for on-phase images (dimensions: [height, width, on_frames, repeats])
-dims_on = [height, width, on_frames, repeats];
-azi_on_f = zeros(dims_on, 'single');
-azi_on_b = zeros(dims_on, 'single');
-alt_on_u = zeros(dims_on, 'single');
-alt_on_d = zeros(dims_on, 'single');
-
-% Preallocate arrays for off-phase images (dimensions: [height, width, off_frames, repeats])
+dims_on  = [height, width, on_frames, repeats];
 dims_off = [height, width, off_frames, repeats];
+
+azi_on_f = zeros(dims_on,  'single');
+azi_on_b = zeros(dims_on,  'single');
+alt_on_u = zeros(dims_on,  'single');
+alt_on_d = zeros(dims_on,  'single');
+
 azi_off_f = zeros(dims_off, 'single');
 azi_off_b = zeros(dims_off, 'single');
 alt_off_u = zeros(dims_off, 'single');
 alt_off_d = zeros(dims_off, 'single');
 
-%% Optimized: Read On-Phase Images and Group by Repeat Using parfor
-disp(' 1. load images')
+%% -------------------- LOAD ON-PERIOD IMAGES --------------------
+disp('Loading ON-period images...');
+
 parfor rep = 1:repeats
-    % Determine trial numbers for each orientation in the current repeat
     trial_front = 4*(rep - 1) + 1;
     trial_back  = 4*(rep - 1) + 2;
     trial_up    = 4*(rep - 1) + 3;
     trial_down  = 4*(rep - 1) + 4;
-    
-    % Retrieve on-indices for each trial
+
     idxF = on_indices_trial{trial_front};
     idxB = on_indices_trial{trial_back};
     idxU = on_indices_trial{trial_up};
     idxD = on_indices_trial{trial_down};
-    
-    % Preallocate temporary arrays for this repeat
+
     tmp_on_f = zeros(height, width, on_frames, 'single');
     tmp_on_b = zeros(height, width, on_frames, 'single');
     tmp_on_u = zeros(height, width, on_frames, 'single');
     tmp_on_d = zeros(height, width, on_frames, 'single');
-    
-    % Loop over frames in the on period
+
     for f = 1:on_frames
-        % --- Front trial ---
-        fileIdx = idxF(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_on_f(:, :, f) = single(imread(fullPath));
-        
-        % --- Back trial ---
-        fileIdx = idxB(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_on_b(:, :, f) = single(imread(fullPath));
-        
-        % --- Up trial ---
-        fileIdx = idxU(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_on_u(:, :, f) = single(imread(fullPath));
-        
-        % --- Down trial ---
-        fileIdx = idxD(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_on_d(:, :, f) = single(imread(fullPath));
+        tmp_on_f(:, :, f) = single(imread(fullfile(image_files(idxF(f)).folder, image_files(idxF(f)).name)));
+        tmp_on_b(:, :, f) = single(imread(fullfile(image_files(idxB(f)).folder, image_files(idxB(f)).name)));
+        tmp_on_u(:, :, f) = single(imread(fullfile(image_files(idxU(f)).folder, image_files(idxU(f)).name)));
+        tmp_on_d(:, :, f) = single(imread(fullfile(image_files(idxD(f)).folder, image_files(idxD(f)).name)));
     end
-    
-    % Write the results back to the preallocated 4D arrays
+
     azi_on_f(:, :, :, rep) = tmp_on_f;
     azi_on_b(:, :, :, rep) = tmp_on_b;
     alt_on_u(:, :, :, rep) = tmp_on_u;
     alt_on_d(:, :, :, rep) = tmp_on_d;
 end
 
+%% -------------------- LOAD OFF-PERIOD IMAGES --------------------
+disp('Loading OFF-period images...');
 
-%% Optimized: Read Off-Phase Images and Group by Repeat Using parfor
 parfor rep = 1:repeats
-    % Determine trial numbers for each orientation in the current repeat
     trial_front = 4*(rep - 1) + 1;
     trial_back  = 4*(rep - 1) + 2;
     trial_up    = 4*(rep - 1) + 3;
     trial_down  = 4*(rep - 1) + 4;
-    
-    % Retrieve off-indices for each trial
+
     off_idxF = off_indices_trial{trial_front};
     off_idxB = off_indices_trial{trial_back};
     off_idxU = off_indices_trial{trial_up};
     off_idxD = off_indices_trial{trial_down};
-    
-    % Preallocate temporary arrays for this repeat
+
     tmp_off_f = zeros(height, width, off_frames, 'single');
     tmp_off_b = zeros(height, width, off_frames, 'single');
     tmp_off_u = zeros(height, width, off_frames, 'single');
     tmp_off_d = zeros(height, width, off_frames, 'single');
-    
-    % Loop over frames in the off period
+
     for f = 1:off_frames
-        % --- Front trial off-phase ---
-        fileIdx = off_idxF(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_off_f(:, :, f) = single(imread(fullPath));
-        
-        % --- Back trial off-phase ---
-        fileIdx = off_idxB(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_off_b(:, :, f) = single(imread(fullPath));
-        
-        % --- Up trial off-phase ---
-        fileIdx = off_idxU(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_off_u(:, :, f) = single(imread(fullPath));
-        
-        % --- Down trial off-phase ---
-        fileIdx = off_idxD(f);
-        fullPath = fullfile(image_files(fileIdx).folder, image_files(fileIdx).name);
-        tmp_off_d(:, :, f) = single(imread(fullPath));
+        tmp_off_f(:, :, f) = single(imread(fullfile(image_files(off_idxF(f)).folder, image_files(off_idxF(f)).name)));
+        tmp_off_b(:, :, f) = single(imread(fullfile(image_files(off_idxB(f)).folder, image_files(off_idxB(f)).name)));
+        tmp_off_u(:, :, f) = single(imread(fullfile(image_files(off_idxU(f)).folder, image_files(off_idxU(f)).name)));
+        tmp_off_d(:, :, f) = single(imread(fullfile(image_files(off_idxD(f)).folder, image_files(off_idxD(f)).name)));
     end
-    
-    % Write the results back to the preallocated 4D arrays
+
     azi_off_f(:, :, :, rep) = tmp_off_f;
     azi_off_b(:, :, :, rep) = tmp_off_b;
     alt_off_u(:, :, :, rep) = tmp_off_u;
     alt_off_d(:, :, :, rep) = tmp_off_d;
 end
 
-disp('images loaded')
+disp('Images loaded.');
 
-%%
-saveFolder = uigetdir(pwd, 'Select a folder to save all results');
-if isequal(saveFolder, 0)
-    error('No folder selected. Operation cancelled.');
-end
-cd(saveFolder);
-
-
+%% -------------------- BASELINE SUBTRACT + AVERAGE --------------------
 disp('Baseline subtracting and averaging over repeats...');
 
 m_azi_off_f = squeeze(mean(azi_off_f, 3));
-m_azi_off_b =  squeeze(mean(azi_off_b, 3));
+m_azi_off_b = squeeze(mean(azi_off_b, 3));
 m_alt_off_u = squeeze(mean(alt_off_u, 3));
 m_alt_off_d = squeeze(mean(alt_off_d, 3));
 
-% Preallocate 3D arrays to hold the average responses (dimensions: [height, width, on_frames])
 azi_f_avg = zeros(height, width, on_frames, 'single');
 azi_b_avg = zeros(height, width, on_frames, 'single');
 alt_u_avg = zeros(height, width, on_frames, 'single');
 alt_d_avg = zeros(height, width, on_frames, 'single');
 
-% Process each repeat sequentially to update the average
 for rep = 1:repeats
-    % Compute the difference for the current repeat
-    diff_azi_f = azi_on_f(:,:,:,rep) - m_azi_off_f(:,:,rep);
-    diff_azi_b = azi_on_b(:,:,:,rep) - m_azi_off_b(:,:,rep);
-    diff_alt_u = alt_on_u(:,:,:,rep) - m_alt_off_u(:,:,rep);
-    diff_alt_d = alt_on_d(:,:,:,rep) - m_alt_off_d(:,:,rep);
-    
-    % Accumulate the differences
-    azi_f_avg = azi_f_avg + diff_azi_f;
-    azi_b_avg = azi_b_avg + diff_azi_b;
-    alt_u_avg = alt_u_avg + diff_alt_u;
-    alt_d_avg = alt_d_avg + diff_alt_d;
+    azi_f_avg = azi_f_avg + (azi_on_f(:,:,:,rep) - m_azi_off_f(:,:,rep));
+    azi_b_avg = azi_b_avg + (azi_on_b(:,:,:,rep) - m_azi_off_b(:,:,rep));
+    alt_u_avg = alt_u_avg + (alt_on_u(:,:,:,rep) - m_alt_off_u(:,:,rep));
+    alt_d_avg = alt_d_avg + (alt_on_d(:,:,:,rep) - m_alt_off_d(:,:,rep));
 end
 
-% Divide by the number of repeats to obtain the average
 azi_f_avg = azi_f_avg / repeats;
 azi_b_avg = azi_b_avg / repeats;
 alt_u_avg = alt_u_avg / repeats;
 alt_d_avg = alt_d_avg / repeats;
-save('averaged_responses.mat', 'azi_f_avg', 'azi_b_avg', 'alt_u_avg', 'alt_d_avg');
 
-% Cell array of averaged data for the 4 directions
-averagedVideos = {azi_f_avg, azi_b_avg, alt_u_avg, alt_d_avg};
+save(fullfile(saveFolder, 'averaged_responses.mat'), ...
+    'azi_f_avg', 'azi_b_avg', 'alt_u_avg', 'alt_d_avg', '-v7.3');
 
-% Corresponding MP4 file names (note the .mp4 extension)
-videoNames = {'azi_f_avg_video.mp4', 'azi_b_avg_video.mp4', ...
-              'alt_u_avg_video.mp4', 'alt_d_avg_video.mp4'};
+%% -------------------- OPTIONAL: SAVE AVERAGED RESPONSE VIDEOS --------------------
+if SAVE_AVERAGE_VIDEOS
+    averagedVideos = {azi_f_avg, azi_b_avg, alt_u_avg, alt_d_avg};
+    videoNames = {'azi_f_avg_video.mp4', 'azi_b_avg_video.mp4', ...
+                  'alt_u_avg_video.mp4', 'alt_d_avg_video.mp4'};
 
-% Loop over each direction to generate an MP4 video
-for v = 1:length(averagedVideos)
-    % Create a VideoWriter object with the MPEG-4 profile for MP4 files
-    writerObj = VideoWriter(videoNames{v}, 'MPEG-4');
-    writerObj.FrameRate = camera_sampling_rate; % Use camera_sampling_rate as frame rate
-    open(writerObj);
-    
-    % Get the current averaged 3D array, with dimensions [height, width, frames]
-    currentAvg = averagedVideos{v};
-    
-    % Loop over each frame of the current averaged array
-    for k = 1:size(currentAvg, 3)
-        % Normalize the frame into [0,1] and convert to uint8
-        frame = im2uint8(mat2gray(currentAvg(:,:,k)));
-        % Write the frame into the video
-        writeVideo(writerObj, frame);
+    for v = 1:length(averagedVideos)
+        writerObj = VideoWriter(fullfile(saveFolder, videoNames{v}), 'MPEG-4');
+        writerObj.FrameRate = camera_sampling_rate;
+        open(writerObj);
+
+        currentAvg = averagedVideos{v};
+        for kf = 1:size(currentAvg, 3)
+            frame = im2uint8(mat2gray(currentAvg(:,:,kf)));
+            writeVideo(writerObj, frame);
+        end
+        close(writerObj);
+        fprintf('Saved video %s\n', videoNames{v});
     end
-    
-    % Close the VideoWriter to finalize and save the file
-    close(writerObj);
-    fprintf('Saved video %s\n', videoNames{v});
 end
 
-%% Parameters
-T = on_time;                 % Stimulus period in seconds
-f_target = 1/T;          % Stimulus frequency (Hz)
-% It is assumed that: on_frames = T * camera_sampling_rate
+%% -------------------- FOURIER DATA --------------------
+T = on_time;
+f_target = 1 / T; %#ok<NASGU>
 
-%% Get FFT along the time dimension (dimension 3)
-% Compute the FFT for each averaged response array.
 fft_azi_f = fft(azi_f_avg, [], 3);
 fft_azi_b = fft(azi_b_avg, [], 3);
 fft_alt_u = fft(alt_u_avg, [], 3);
 fft_alt_d = fft(alt_d_avg, [], 3);
 
-%% Run fourier transforms
+fourier_data = zeros(height, width, on_frames, 4, 'like', fft_azi_f);
 fourier_data(:,:,:,1) = fft_azi_f;
 fourier_data(:,:,:,2) = fft_azi_b;
 fourier_data(:,:,:,3) = fft_alt_u;
 fourier_data(:,:,:,4) = fft_alt_d;
-%Could try Ming's way of doing Fourier's transform based on frequency of
-%the stim 
-save("processing_data.mat", 'fourier_data'); 
 
-%%
+save(fullfile(saveFolder, 'processing_data.mat'), 'fourier_data', '-v7.3');
+
+%% -------------------- RETINOTOPY MAPS --------------------
 sm = SignMapperModifR();
-sm.ref_img = first_img;
-figure;
-imagesc(first_img); axis image; title('Reference Image');
-k = sm.findRetinotopicMap(fourier_data); % Find the correct harmonic for retinotopic maps
- % Get the lowest harmonic which isn't normally distributed
-  % the real map is very positively skewed
-[azi,alt] = sm.getRetinotopicMap(fourier_data,k); % Get the retinotopic map of determined harmonic
-sm.displayMaps(azi,alt); % Show maps
+sm.ref_img = ReferenceImage;
 
-save('alt.mat','alt','-v7.3','-nocompression')
-save('azi.mat','azi','-v7.3','-nocompression')
-% Below allows you to manually redefine maps if the auto-chooser got the wrong harmonic
+figRef2 = figure('Color','w');
+imagesc(ReferenceImage); axis image; colormap gray;
+title('Reference Image');
+saveas(figRef2, fullfile(qcDir, 'reference_image_signmapper.png'));
+
+k = sm.findRetinotopicMap(fourier_data);
+[azi, alt] = sm.getRetinotopicMap(fourier_data, k);
+
+figAziAlt = figure('Color','w');
+sm.displayMaps(azi, alt);
+saveas(figAziAlt, fullfile(qcDir, 'azimuth_elevation_maps.png'));
+
+save(fullfile(saveFolder, 'azi.mat'), 'azi', '-v7.3', '-nocompression');
+save(fullfile(saveFolder, 'alt.mat'), 'alt', '-v7.3', '-nocompression');
+
 while true
-    goodmap = questdlg('Do your maps look good?','Map quality','Yes','No','Yes');
-    close
-    
+    goodmap = questdlg('Do your maps look good?', 'Map quality', 'Yes', 'No', 'Yes');
+    close(gcf);
+
     switch goodmap
         case 'No'
             k = sm.manualFindRetinotopicMap(fourier_data);
-            [azi,alt] = sm.getRetinotopicMap(fourier_data,k);
-            sm.displayMaps(azi,alt);
+            [azi, alt] = sm.getRetinotopicMap(fourier_data, k);
+            figAziAlt = figure('Color','w');
+            sm.displayMaps(azi, alt);
+            saveas(figAziAlt, fullfile(qcDir, 'azimuth_elevation_maps_manual_selection.png'));
         case 'Yes'
             break
     end
 end
 
-mkdir('AdditionalSignMapMaterials'); % Additional save directory for supplemental stuff
-%%
-maps = sm.Juavinett2017_signMapping(azi,alt); % Run the sign map creator, from the phase-maps
+%% -------------------- SIGN MAPS --------------------
+maps = sm.Juavinett2017_signMapping(azi, alt);
 
-sm.saveSignMaps(maps); % Save everything
-sm.exportSignMaps(maps); % Export overlay image
+mkdir(fullfile(saveFolder, 'AdditionalSignMapMaterials'));
+sm.saveSignMaps(maps);
+sm.exportSignMaps(maps);
+
+% Attempt to save common outputs from maps struct if fields exist
+VFS_processed  = [];
+VFS_boundaries = [];
+if isfield(maps, 'VFS_processed')
+    VFS_processed = maps.VFS_processed;
+end
+if isfield(maps, 'VFS_boundaries')
+    VFS_boundaries = maps.VFS_boundaries;
+end
+
+% QC figures for azimuth/elevation/sign outputs
+figAzi = figure('Color','w');
+imagesc(azi); axis image off; colorbar;
+title('Azimuth Map');
+saveas(figAzi, fullfile(qcDir, 'azimuth_map.png'));
+
+figAlt = figure('Color','w');
+imagesc(alt); axis image off; colorbar;
+title('Elevation Map');
+saveas(figAlt, fullfile(qcDir, 'elevation_map.png'));
+
+if ~isempty(VFS_processed)
+    figSign = figure('Color','w');
+    imshow(mat2gray(ReferenceImage), []); hold on;
+    ovDisp = makeOverlayForDisplay(VFS_processed);
+    h = imshow(ovDisp);
+    set(h, 'AlphaData', 0.45);
+    title('Sign Map Overlay on Reference Image');
+    saveas(figSign, fullfile(qcDir, 'signmap_overlay.png'));
+elseif ~isempty(VFS_boundaries)
+    figSign = figure('Color','w');
+    imshow(mat2gray(ReferenceImage), []); hold on;
+    ovDisp = makeOverlayForDisplay(VFS_boundaries);
+    h = imshow(ovDisp);
+    set(h, 'AlphaData', 0.45);
+    title('Sign Boundaries Overlay on Reference Image');
+    saveas(figSign, fullfile(qcDir, 'signmap_overlay.png'));
+end
+
+%% -------------------- OPTIONAL V1 MASK --------------------
+V1_mask_retino = [];
+
+if DRAW_V1_MASK
+    v1MaskPath = fullfile(saveFolder, 'V1_mask_retino.mat');
+
+    if exist(v1MaskPath, 'file') == 2
+        tmp = load(v1MaskPath);
+        if isfield(tmp, 'V1_mask_retino')
+            V1_mask_retino = tmp.V1_mask_retino;
+        end
+    end
+
+    if isempty(V1_mask_retino)
+        figure('Name','Draw V1 Mask','Color','w');
+        imshow(mat2gray(ReferenceImage), []); hold on;
+
+        if ~isempty(VFS_processed)
+            ovDisp = makeOverlayForDisplay(VFS_processed);
+            h = imshow(ovDisp);
+            set(h, 'AlphaData', 0.45);
+            title('Reference + Sign Map Overlay. Draw polygon around V1.');
+        elseif ~isempty(VFS_boundaries)
+            ovDisp = makeOverlayForDisplay(VFS_boundaries);
+            h = imshow(ovDisp);
+            set(h, 'AlphaData', 0.45);
+            title('Reference + Sign Boundaries. Draw polygon around V1.');
+        else
+            title('Reference Image. Draw polygon around V1.');
+        end
+
+        hpoly = drawpolygon('Color','y','LineWidth',2);
+        wait(hpoly);
+
+        V1_mask_retino = poly2mask(hpoly.Position(:,1), hpoly.Position(:,2), size(ReferenceImage,1), size(ReferenceImage,2));
+        save(v1MaskPath, 'V1_mask_retino');
+    end
+
+    figV1 = figure('Color','w');
+    imshow(mat2gray(ReferenceImage), []); hold on;
+    visboundaries(V1_mask_retino, 'Color', 'y', 'LineWidth', 1.5);
+    title('V1 Mask on Reference Image');
+    saveas(figV1, fullfile(qcDir, 'V1_mask_overlay.png'));
+end
+
+%% -------------------- BUILD CONSOLIDATED OUTPUT STRUCT --------------------
+out = struct();
+
+% Core reusable outputs
+out.ReferenceImage = ReferenceImage;
+out.azi = azi;
+out.alt = alt;
+out.k = k;
+out.maps = maps;
+out.VFS_processed = VFS_processed;
+out.VFS_boundaries = VFS_boundaries;
+out.V1_mask_retino = V1_mask_retino;
+
+% Trial / timing metadata
+out.TrialsStart = TrialsStart;
+out.TrialsEnd = TrialsEnd;
+out.numTrials = numTrials;
+out.repeats = repeats;
+out.on_indices_trial = on_indices_trial;
+out.off_indices_trial = off_indices_trial;
+out.on_time = on_time;
+out.on_frames = on_frames;
+out.off_frames = off_frames;
+out.baseline_seconds = BASELINE_SECONDS;
+out.camera_sampling_rate = camera_sampling_rate;
+out.intan_sampling_rate = Fs;
+out.orientation_order = ORIENTATION_ORDER;
+
+% Image / source metadata
+out.image_height = height;
+out.image_width = width;
+out.image_folder = folder_path;
+out.stimulus_mat_file = stimMatPath;
+out.image_filenames = {image_files.name};
+
+% Averaged responses / Fourier data
+out.azi_f_avg = azi_f_avg;
+out.azi_b_avg = azi_b_avg;
+out.alt_u_avg = alt_u_avg;
+out.alt_d_avg = alt_d_avg;
+out.fourier_data = fourier_data;
+
+% QC summary fields
+out.num_camera_edges = num_rising_edges;
+out.num_images = n_images;
+out.peak_locs = locs;
+out.peak_values = pks;
+out.peak_detection_params = struct( ...
+    'MinPeakHeight', PEAK_MIN_HEIGHT, ...
+    'MinPeakDistance', PEAK_MIN_DISTANCE);
+
+save(fullfile(saveFolder, 'retino_session_output.mat'), 'out', '-v7.3');
+
+%% -------------------- SAVE A LIGHTWEIGHT REGISTRATION FILE --------------------
+registration_ready = struct();
+registration_ready.ReferenceImage = ReferenceImage;
+registration_ready.V1_mask_retino = V1_mask_retino;
+registration_ready.azi = azi;
+registration_ready.alt = alt;
+registration_ready.maps = maps;
+registration_ready.VFS_processed = VFS_processed;
+registration_ready.VFS_boundaries = VFS_boundaries;
+registration_ready.k = k;
+
+save(fullfile(saveFolder, 'retino_registration_ready.mat'), 'registration_ready', '-v7.3');
+
+fprintf('\nDone.\n');
+fprintf('Saved consolidated output: %s\n', fullfile(saveFolder, 'retino_session_output.mat'));
+fprintf('Saved registration-ready output: %s\n', fullfile(saveFolder, 'retino_registration_ready.mat'));
+fprintf('Saved QC figures in: %s\n', qcDir);
+
+%% -------------------- LOCAL FUNCTION --------------------
+function ovDisp = makeOverlayForDisplay(ov)
+    if isempty(ov)
+        ovDisp = [];
+        return;
+    end
+    if ndims(ov)==2
+        ovDisp = repmat(mat2gray(ov), 1,1,3);
+    elseif ndims(ov)==3 && size(ov,3)==3
+        ovDisp = mat2gray(ov);
+    else
+        ovDisp = repmat(mat2gray(ov(:,:,1)), 1,1,3);
+    end
+end

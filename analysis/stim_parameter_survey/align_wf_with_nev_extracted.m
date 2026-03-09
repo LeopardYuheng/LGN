@@ -1,17 +1,15 @@
-%% build_widefield_out_base.m
-%
 % This script:
-%   - Loads session_sync*.mat
+%   - Loads {subject}_{date}_dio_stim_timing.mat (contains "session")
 %   - Loads reference_mask.mat
 %   - Sorts TIFF filenames
 %   - Verifies frame alignment
 %   - Loads CSV (trial_index, stim_chan, current_uA)
-%   - Builds clean bookkeeping struct "out_base"
+%   - Builds clean bookkeeping struct "out"
 %
 % It does NOT compute trial maps or ΔF/F.
 %
 % Output:
-%   analysis/widefield_session_base.mat
+%   analysis/{subject}_{date}_wf_stim_aligned_out.mat
 
 close all; clc; clear; fclose('all');
 
@@ -26,7 +24,7 @@ if isequal(img_dir,0), error('No image folder selected.'); end
 if isequal(mask_name,0), error('No mask selected.'); end
 mask_file = fullfile(mask_path, mask_name);
 
-[ses_name, ses_path] = uigetfile('*.mat', 'Select {subject}_{Experiment}_dio_stim_timing.mat');
+[ses_name, ses_path] = uigetfile('*.mat', 'Select {subject}_{date}_dio_stim_timing.mat');
 if isequal(ses_name,0), error('No session file selected.'); end
 session_mat = fullfile(ses_path, ses_name);
 
@@ -34,6 +32,70 @@ session_mat = fullfile(ses_path, ses_name);
     'Select CSV (trial_index, stim_chan, current_uA)');
 if isequal(csv_name,0), error('No CSV selected.'); end
 csv_file = fullfile(csv_path, csv_name);
+
+%% -------------------------
+% Pull subject + date from session_mat (preferred)
+% -------------------------
+
+Xmeta = load(session_mat, 'session');
+assert(isfield(Xmeta,'session'), 'Session file must contain variable "session".');
+session_meta = Xmeta.session;
+
+subject_id = '';
+date_str   = '';
+
+% 1) Preferred: stored metadata inside session.metadata
+if isfield(session_meta,'metadata')
+    md = session_meta.metadata;
+
+    % subject
+    if isfield(md,'mouse_id') && ~isempty(md.mouse_id)
+        subject_id = char(string(md.mouse_id));
+    elseif isfield(md,'subject_id') && ~isempty(md.subject_id)
+        subject_id = char(string(md.subject_id));
+    end
+
+    % date
+    if isfield(md,'date_str') && ~isempty(md.date_str)
+        date_str = char(string(md.date_str));
+    end
+end
+
+% 2) Backup: parse from session_mat filename: {subject}_{YYYYMMDD}_*.mat
+if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
+    [~, ses_base, ~] = fileparts(session_mat);
+    tok = regexp(ses_base, '^(?<subj>[^_]+)_(?<date>\d{8})_', 'names', 'once');
+    if ~isempty(tok)
+        if isempty(strtrim(subject_id)), subject_id = tok.subj; end
+        if isempty(strtrim(date_str)),   date_str   = tok.date; end
+    end
+end
+
+% 3) Final fallback: prompt user
+if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
+    prompt = {'Enter subject ID (e.g., LGN11):', 'Enter date (YYYYMMDD):'};
+    dlg_title = 'Metadata (missing from session file)';
+    dims = [1 60];
+    definput = {subject_id, date_str};
+
+    answer = inputdlg(prompt, dlg_title, dims, definput);
+    if isempty(answer)
+        error('User cancelled metadata input.');
+    end
+
+    subject_id = strtrim(answer{1});
+    date_str   = strtrim(answer{2});
+end
+
+% Validate
+if isempty(subject_id)
+    error('Subject ID is required.');
+end
+if isempty(regexp(date_str, '^\d{8}$', 'once'))
+    error('Date must be in YYYYMMDD format.');
+end
+
+fprintf('Metadata:\n  subject_id = %s\n  date_str   = %s\n', subject_id, date_str);
 
 %% -------------------------
 % Load session + mask
@@ -148,30 +210,33 @@ end
 % Build BASE struct
 % -------------------------
 
-out_base = struct();
+out = struct();
 
-out_base.img_dir = img_dir;
-out_base.mask_file = mask_file;
-out_base.session_mat = session_mat;
-out_base.csv_file = csv_file;
+out.subject_id = subject_id;
+out.date_str   = date_str;
 
-out_base.image_files_sorted = {image_files.name}';
-out_base.n_frames = numel(image_files);
+out.img_dir     = img_dir;
+out.mask_file   = mask_file;
+out.session_mat = session_mat;
+out.csv_file    = csv_file;
 
-out_base.Freq = Freq;
-out_base.frame_times_s = frame_times_s;
+out.image_files_sorted = {image_files.name}';
+out.n_frames           = numel(image_files);
 
-out_base.trial_onset_frame_idx = train_frame_idx;
-out_base.trial_channel = train_channel;
-out_base.trial_stim_chan = trial_stim_chan;
-out_base.trial_current_uA = trial_current_uA;
+out.Freq          = Freq;
+out.frame_times_s = frame_times_s;
 
-out_base.n_trials = n_trains;
+out.trial_onset_frame_idx = train_frame_idx;
+out.trial_channel         = train_channel;
+out.trial_stim_chan       = trial_stim_chan;
+out.trial_current_uA      = trial_current_uA;
 
-out_base.mask_size = size(final_mask);
-out_base.crop_rect = crop_rect;
+out.n_trials   = n_trains;
 
-out_base.created_on = datestr(now);
+out.mask_size  = size(final_mask);
+out.crop_rect  = crop_rect;
+
+out.created_on = datestr(now);
 
 %% -------------------------
 % Save
@@ -180,8 +245,10 @@ out_base.created_on = datestr(now);
 analysisFolder = fullfile(fileparts(img_dir), 'analysis');
 if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
 
-savePath = fullfile(analysisFolder, 'wf_stim_aligned_out.mat');
-save(savePath, 'out_base', '-v7.3');
+saveName = sprintf('%s_%s_wf_stim_aligned_out.mat', subject_id, date_str);
+savePath = fullfile(analysisFolder, saveName);
+
+save(savePath, 'out', '-v7.3');
 
 fprintf('\nSaved base session file:\n  %s\n', savePath);
 fprintf('This file contains only bookkeeping. No ΔF/F computed.\n');

@@ -1,30 +1,27 @@
 %% register_retino_to_stim_cpselect_affine.m
+%
 % Manual registration of retinotopy reference -> stimulation-day reference
-% using cpselect control points and an affine transform.
-%
-% Interactive steps:
-%   1) (Optional) draw V1 polygon in retinotopy space (saved for reuse)
-%   2) select matching control points with cpselect
-%
-% Outputs saved in outDir:
-%   - tform_affine.mat
-%   - V1_mask_retino.mat
-%   - V1_mask_stim.mat
-%   - stimRef_gray.png
-%   - retRef_warp.png
-%   - qc_falsecolor.png
-%   - qc_v1_on_stim.png
-%
-% Notes:
-%   - Need >= 3 control points for affine; 10–30 recommended.
 
 close all; clear; clc;
 
-%% -------------------- USER SETTINGS --------------------
-retinoMatPath = 'C:\Users\LuanLab\OneDrive - Rice University\Desktop\LGN\retinotopic_mapping\LGN11_retinotopic_mapping\additional_maps.mat';
-stimRefPath   = 'C:\Users\LuanLab\OneDrive - Rice University\Desktop\LGN\wf_stim_ephys\WF_StimSurvey_20260210\StimSurvey_images_20260210\img_actual\test61_00001.tif';
-outDir        = 'C:\Users\LuanLab\OneDrive - Rice University\Desktop\LGN\wf_stim_ephys\WF_StimSurvey_20260210\StimSurvey_images_20260210\retinotopic_mapping';
+%% -------------------- SELECT FILES --------------------
 
+% Select retinotopy .mat
+[ret_name, ret_path] = uigetfile('*.mat', 'Select retinotopy additional_maps.mat');
+if isequal(ret_name,0), error('No retinotopy file selected.'); end
+retinoMatPath = fullfile(ret_path, ret_name);
+
+% Select stimulation reference image
+[stim_name, stim_path] = uigetfile({'*.tif;*.tiff;*.png;*.jpg'}, ...
+    'Select stimulation reference image');
+if isequal(stim_name,0), error('No stim reference selected.'); end
+stimRefPath = fullfile(stim_path, stim_name);
+
+% Select output directory
+outDir = uigetdir(pwd, 'Select output directory for registration results');
+if isequal(outDir,0), error('No output directory selected.'); end
+
+%% -------------------- USER SETTINGS --------------------
 USE_VFS_BOUNDARIES_IF_AVAILABLE = true;
 OVERLAY_ALPHA = 0.45;
 

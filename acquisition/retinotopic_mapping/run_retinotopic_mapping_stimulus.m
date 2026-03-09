@@ -1,4 +1,4 @@
-% function retinotopicMappingStimulus_modifR60Hz()
+function retinotopicMappingStimulus_modifR60Hz()
 % RETINOTOPICMAPPINGSTIMULUS_MODIFR60HZ
 % Beta retinotopic mapping code
 % Written by KS on 180123
@@ -19,13 +19,48 @@ PulsePal;
 % Prompt user for save folder (input as a string)
 file_save = input('Give the path for the folder you want the time_stamps to be saved in: ', 's');
 
-%% Load stimulus movie
-% Change this path to point to the directory containing your movie files
-movFiles = dir(fullfile('H:\SWR_task\Ret-map\Goard\Stimulus'));
+%% -------------------------
+% Load stimulus .mat from same folder as this script
+%% -------------------------
+thisFile = mfilename('fullpath');
+thisDir  = fileparts(thisFile);
 
-% Load the fourth movie file in the directory
-load(fullfile(movFiles(4).folder, movFiles(4).name));
+matList = dir(fullfile(thisDir, '*.mat'));
+assert(~isempty(matList), 'No .mat files found in the script folder:\n  %s', thisDir);
 
+% Prefer a stimulus-like .mat (e.g., "4directions_stim_60Hz.mat")
+names = lower(string({matList.name}));
+pref  = contains(names, "4directions") | contains(names, "stim");
+idx   = find(pref, 1, 'first');
+
+if isempty(idx)
+    % If no obvious candidate, ask the user to select one (default = thisDir)
+    [matName, matPath] = uigetfile(fullfile(thisDir, '*.mat'), ...
+        'Select stimulus .mat (must contain new_forward_stim etc.)');
+    if isequal(matName,0), error('No stimulus .mat selected.'); end
+    stimMatPath = fullfile(matPath, matName);
+else
+    stimMatPath = fullfile(thisDir, matList(idx).name);
+end
+
+fprintf('Loading stimulus from:\n  %s\n', stimMatPath);
+S = load(stimMatPath);
+
+% Required variables (match your existing pipeline)
+need = ["new_forward_stim","new_backward_stim","new_upward_stim","new_downward_stim"];
+assert(all(isfield(S, cellstr(need))), ...
+    'Stimulus .mat must contain variables:\n  %s\nLoaded file:\n  %s', ...
+    strjoin(cellstr(need), ', '), stimMatPath);
+
+new_forward_stim  = S.new_forward_stim;
+new_backward_stim = S.new_backward_stim;
+new_upward_stim   = S.new_upward_stim;
+new_downward_stim = S.new_downward_stim;
+
+% Basic sanity checks
+assert(ndims(new_forward_stim)==3, 'new_forward_stim must be HxWxFrames.');
+assert(isequal(size(new_forward_stim), size(new_backward_stim), size(new_upward_stim), size(new_downward_stim)), ...
+    'All 4 stimulus movies must have identical size.');
 % Set up Psychtoolbox defaults
 PsychDefaultSetup(2);
 
