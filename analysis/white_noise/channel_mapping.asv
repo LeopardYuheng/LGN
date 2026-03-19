@@ -1,0 +1,18 @@
+clc;clear;
+%% Load files
+T = load('C:\Albert Li\LGN\Data\white_noise\02-06-2026-WN\02-06-2026-WN_260206_113817\channelmap.mat');     % contains chanMap and connected
+S = load('C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_channel_mapping\Map_Intan2Ripple.mat');   % 128x1 mapping vector
+
+chanMap = S.chanMap;
+intan_to_Ripple = S.intan_to_Ripple;   % adjust name if slightly different
+
+%% Phy channel indices from CSV
+phy_ch = T.ch;   % usually 0-based in Phy
+
+%% Convert: Phy channel -> Intan channel -> Ripple channel
+intan_ch  = S.chanMap(phy_ch + 1);
+ripple_ch = intan_to_Ripple(intan_ch);
+
+%% Add to table
+T.intan_ch  = intan_ch;
+T.ripple_ch = ripple_ch;

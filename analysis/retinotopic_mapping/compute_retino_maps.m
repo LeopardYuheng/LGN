@@ -27,7 +27,7 @@
 close all;
 clear;
 clc;
-addpath(genpath('C:\Users\LuanLab\OneDrive - Rice University\Documents\GitHub\Luan_lab_retinomap-pipeline\analysis\retinotopic_mapping\rm_functions'));
+addpath(genpath('\\10.129.151.108\xieluanlabs\xl_LGN\LGN_ALBERT\LGN imaging\code_wf+stim_+old_code\Data_processing_Xiaorong'));
 
 %% -------------------- USER SETTINGS --------------------
 DRAW_V1_MASK = true;              % draw V1 mask at end if not already available
@@ -64,6 +64,15 @@ qcDir = fullfile(saveFolder,'qc');
 if ~exist(qcDir,'dir')
     mkdir(qcDir);
 end
+%% -------------------- LOAD STIMULUS DATA --------------------
+[fn, fp] = uigetfile('*.mat', 'Select the Stimulus Data MAT File');
+if isequal(fn,0)
+    error('No stimulus MAT file selected.');
+end
+stimMatPath = fullfile(fp, fn);
+load(stimMatPath);
+
+assert(exist('Stimdata','var')==1, 'Stimdata variable not found in selected MAT file.');
 
 %% -------------------- LOAD INTAN RHD DATA --------------------
 DIR = dir(fullfile(rhdFolder,'*.rhd'));
@@ -133,15 +142,7 @@ title('Distribution of Trial Length');
 grid on;
 saveas(fig3, fullfile(qcDir, 'trial_length_histogram.png'));
 
-%% -------------------- LOAD STIMULUS DATA --------------------
-[fn, fp] = uigetfile('*.mat', 'Select the Stimulus Data MAT File');
-if isequal(fn,0)
-    error('No stimulus MAT file selected.');
-end
-stimMatPath = fullfile(fp, fn);
-load(stimMatPath);
 
-assert(exist('Stimdata','var')==1, 'Stimdata variable not found in selected MAT file.');
 
 %% -------------------- CAMERA TRIGGERS --------------------
 camera_diff    = diff(recFile(2, :));
@@ -156,12 +157,7 @@ num_rising_edges = length(camera_indicator);
 disp(['Number of camera edges: ', num2str(num_rising_edges)]);
 
 %% -------------------- LOAD IMAGE FILES --------------------
-folder_path = uigetdir(pwd, 'Select Corresponding Image Folder');
-if isequal(folder_path,0)
-    error('No image folder selected.');
-end
-
-image_files = dir(fullfile(folder_path, '*.tif'));
+image_files = dir(fullfile(imgFolder, '*.tif'));
 nFiles = numel(image_files);
 assert(nFiles > 0, 'No tif images found in selected image folder.');
 
@@ -220,7 +216,7 @@ for i = 1:numTrials
 end
 
 %% -------------------- REFERENCE IMAGE --------------------
-firstFile = image_files(1);
+firstFile = image_files(end);
 refPath = fullfile(firstFile.folder, firstFile.name);
 ReferenceImage = imread(refPath);
 
@@ -419,6 +415,7 @@ end
 
 %% -------------------- SIGN MAPS --------------------
 maps = sm.Juavinett2017_signMapping(azi, alt);
+ReferenceImage = maps.ReferenceImage;
 
 mkdir(fullfile(saveFolder, 'AdditionalSignMapMaterials'));
 sm.saveSignMaps(maps);
@@ -433,8 +430,7 @@ end
 if isfield(maps, 'VFS_boundaries')
     VFS_boundaries = maps.VFS_boundaries;
 end
-
-% QC figures for azimuth/elevation/sign outputs
+%% -------------------- QC FIGURES FROM SIGNMAPPER OUTPUTS --------------------
 figAzi = figure('Color','w');
 imagesc(azi); axis image off; colorbar;
 title('Azimuth Map');
@@ -445,25 +441,20 @@ imagesc(alt); axis image off; colorbar;
 title('Elevation Map');
 saveas(figAlt, fullfile(qcDir, 'elevation_map.png'));
 
-if ~isempty(VFS_processed)
+% Try to save the SignMapper-produced overlay directly if available
+if isfield(maps, 'VFS_processed') && ~isempty(maps.VFS_processed)
     figSign = figure('Color','w');
-    imshow(mat2gray(ReferenceImage), []); hold on;
-    ovDisp = makeOverlayForDisplay(VFS_processed);
-    h = imshow(ovDisp);
-    set(h, 'AlphaData', 0.45);
-    title('Sign Map Overlay on Reference Image');
+    imshow(maps.VFS_processed, []);
+    title('SignMapper Overlay');
     saveas(figSign, fullfile(qcDir, 'signmap_overlay.png'));
-elseif ~isempty(VFS_boundaries)
+elseif isfield(maps, 'VFS_boundaries') && ~isempty(maps.VFS_boundaries)
     figSign = figure('Color','w');
-    imshow(mat2gray(ReferenceImage), []); hold on;
-    ovDisp = makeOverlayForDisplay(VFS_boundaries);
-    h = imshow(ovDisp);
-    set(h, 'AlphaData', 0.45);
-    title('Sign Boundaries Overlay on Reference Image');
+    imshow(maps.VFS_boundaries, []);
+    title('SignMapper Boundaries');
     saveas(figSign, fullfile(qcDir, 'signmap_overlay.png'));
 end
-
 %% -------------------- OPTIONAL V1 MASK --------------------
+
 V1_mask_retino = [];
 
 if DRAW_V1_MASK
@@ -477,34 +468,42 @@ if DRAW_V1_MASK
     end
 
     if isempty(V1_mask_retino)
-        figure('Name','Draw V1 Mask','Color','w');
-        imshow(mat2gray(ReferenceImage), []); hold on;
+        figDraw = figure('Name','Draw V1 Mask','Color','w');
+        imshow(mat2gray(maps.ReferenceImage), []);
+        hold on;
 
-        if ~isempty(VFS_processed)
-            ovDisp = makeOverlayForDisplay(VFS_processed);
+        if isfield(maps,'VFS_boundaries') && ~isempty(maps.VFS_boundaries)
+            visboundaries(maps.VFS_boundaries > 0, 'Color', 'r', 'LineWidth', 1);
+            title('Reference + SignMapper boundaries. Draw polygon around V1.');
+        elseif isfield(maps,'VFS_processed') && ~isempty(maps.VFS_processed)
+            ovDisp = makeOverlayForDisplay(maps.VFS_processed);
             h = imshow(ovDisp);
-            set(h, 'AlphaData', 0.45);
-            title('Reference + Sign Map Overlay. Draw polygon around V1.');
-        elseif ~isempty(VFS_boundaries)
-            ovDisp = makeOverlayForDisplay(VFS_boundaries);
-            h = imshow(ovDisp);
-            set(h, 'AlphaData', 0.45);
-            title('Reference + Sign Boundaries. Draw polygon around V1.');
+            set(h,'AlphaData',0.35);
+            title('Reference + SignMapper overlay. Draw polygon around V1.');
         else
-            title('Reference Image. Draw polygon around V1.');
+            title('Reference image. Draw polygon around V1.');
         end
 
+        axis image;
         hpoly = drawpolygon('Color','y','LineWidth',2);
         wait(hpoly);
 
-        V1_mask_retino = poly2mask(hpoly.Position(:,1), hpoly.Position(:,2), size(ReferenceImage,1), size(ReferenceImage,2));
+        V1_mask_retino = poly2mask( ...
+            hpoly.Position(:,1), ...
+            hpoly.Position(:,2), ...
+            size(maps.ReferenceImage,1), ...
+            size(maps.ReferenceImage,2));
+
         save(v1MaskPath, 'V1_mask_retino');
+        close(figDraw);
     end
 
     figV1 = figure('Color','w');
-    imshow(mat2gray(ReferenceImage), []); hold on;
+    imshow(mat2gray(maps.ReferenceImage), []);
+    hold on;
     visboundaries(V1_mask_retino, 'Color', 'y', 'LineWidth', 1.5);
     title('V1 Mask on Reference Image');
+    axis image;
     saveas(figV1, fullfile(qcDir, 'V1_mask_overlay.png'));
 end
 
@@ -539,7 +538,7 @@ out.orientation_order = ORIENTATION_ORDER;
 % Image / source metadata
 out.image_height = height;
 out.image_width = width;
-out.image_folder = folder_path;
+out.image_folder = imgFolder;
 out.stimulus_mat_file = stimMatPath;
 out.image_filenames = {image_files.name};
 
@@ -593,3 +592,5 @@ function ovDisp = makeOverlayForDisplay(ov)
         ovDisp = repmat(mat2gray(ov(:,:,1)), 1,1,3);
     end
 end
+
+

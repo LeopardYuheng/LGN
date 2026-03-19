@@ -381,27 +381,30 @@ classdef SignMapperModifR < handle
             if nargin < 2
                 maps = obj.maps;
             end
-            
-            figure('units','normalized','outerposition',[0.22 0 0.6 1]) % standard widescreen 1920x1080p
-            
+        
+            figure('units','normalized','outerposition',[0.22 0 0.6 1])
+        
             refimg = maps.ReferenceImage;
-            bound = maps.VFS_boundaries;
-            refimg(bound) = max(refimg(:))*1.1;
-            imagesc(refimg)
+            bound  = maps.VFS_boundaries;
+        
+            % Ensure logical mask
+            bound = bound > 0;
+        
+            refimg_disp = double(refimg);
+            refimg_disp(bound) = max(refimg_disp(:))*1.1;
+        
+            imagesc(refimg_disp)
             axis off
             axis square
-            
+            colormap gray
+        
             axes('Position',[0.155 0.775 0.15 0.15])
             imagesc(maps.VFS_raw)
             axis square
             axis off
-    
-            ax = findobj(gcf,'Type','axes');
-            ax(1).Colormap = jet;
-            ax(2).Colormap = gray;
-            
-            
-            saveas(gcf,'overlay_map.jpg') 
+            colormap jet
+        
+            saveas(gcf,'overlay_map.jpg')
             close
         end
         
@@ -733,23 +736,38 @@ classdef SignMapperModifR < handle
                 end
             end
             
-            %% minor processing of patchsign to change to -1 to 0 to 1
-            anatomypic = rot90(obj.ref_img)+1; %% reference image
-            lower_val = unique(patchSign);
-            lower_val = lower_val(2);
-            patchSign_sub = patchSign;
-            patchSign_sub(patchSign_sub == lower_val) = -lower_val;
-            patchSign = -sign(patchSign_sub);
+            %% ---------- store outputs in ONE CONSISTENT SPACE: RAW IMAGE SPACE ----------
+
+            % Native/raw reference image space
+            rawRef = obj.ref_img;
             
-            %% storing data for giving out
+            % SignMapper internal products currently live in SignMapper space
+            % Convert them back to raw reference-image space for saving.
+            targetSize = [size(rawRef,1), size(rawRef,2)];
             
-            maps.HorizontalRetinotopy = imresize(kmap_hor,[400 400]);
-            maps.VerticalRetinotopy = imresize(kmap_vert,[400 400]);
-            maps.VFS_raw = imresize(VFS, [400 400]);
-            maps.VFS_processed = imresize(patchSign,[400 400]);
-            maps.VFS_boundaries = imresize(bwmorph(abs(im),'remove'),[400 400]);
-            maps.ReferenceImage = imresize(anatomypic,[400 400]);
-            maps.Eccentricity = imresize(AreaInfo.kmap_rad,[400 400]);
+            % Undo display-space resizing only. Keep orientation consistent with rawRef.
+            % Because the current SignMapper outputs were built after internal rotations,
+            % we explicitly resize them to raw image dimensions for downstream use.
+            hor_rawspace   = imresize(kmap_hor, targetSize, 'bilinear');
+            vert_rawspace  = imresize(kmap_vert, targetSize, 'bilinear');
+            vfs_rawspace   = imresize(VFS, targetSize, 'bilinear');
+            patch_rawspace = imresize(patchSign, targetSize, 'nearest');
+            bound_rawspace = imresize(bwmorph(abs(im),'remove'), targetSize, 'nearest');
+            ecc_rawspace   = imresize(AreaInfo.kmap_rad, targetSize, 'bilinear');
+            
+            % Save ONLY raw-space versions for downstream analysis
+            maps.HorizontalRetinotopy = hor_rawspace;
+            maps.VerticalRetinotopy   = vert_rawspace;
+            maps.VFS_raw              = vfs_rawspace;
+            maps.VFS_processed        = patch_rawspace;
+            maps.VFS_boundaries       = bound_rawspace;
+            maps.ReferenceImage       = rawRef;
+            maps.Eccentricity         = ecc_rawspace;
+            
+            % Optional: also save legacy display-space versions for debugging/comparison
+            maps.LegacyDisplayReferenceImage = imresize(rot90(obj.ref_img)+1,[400 400]);
+            maps.LegacyDisplayVFS_processed  = imresize(patchSign,[400 400]);
+            maps.LegacyDisplayVFS_boundaries = imresize(bwmorph(abs(im),'remove'),[400 400]);
             
             obj.maps = maps;
             close all % clean up

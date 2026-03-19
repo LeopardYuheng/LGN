@@ -37,7 +37,7 @@ currents_uA = [0 2 3 4 5 7];
 % currents_uA = [0 7];
 
 
-channels    = [14 16 18 27 35 67 77 81 110 118];
+channels    = [14 16 1                                                                              8 28 32 50 75 86 87 110 118];
 % channels    = [16  120];
 
 num_trials_per_parameter = 30;
