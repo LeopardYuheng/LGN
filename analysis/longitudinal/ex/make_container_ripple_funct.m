@@ -1,50 +1,27 @@
-%% make_container_ripple.m
+function container_path = make_container_ripple(out_mat_file, cfg, container_name)
+% make_container_ripple_pointer_only
+%
 % Builds a small pointer-only container from Ripple bookkeeping file:
 %   {subject}_{date}_wf_stim_aligned_out.mat  (contains struct "out")
 %
 % ROBUST TO:
-%   - Partial experimental runs
+%   - Partial experimental runs (e.g., IBLRig stopped early)
 %   - Mismatched trial vector lengths
 %   - Incorrect preallocated n_trials
 %
 % Container stores:
-%   - dataset_root
-%   - relative paths3       
-%   - cfg
+%   - dataset_root (fixed)
+%   - relative paths (img_dir, mask_file, session_mat, csv_file, out_mat_file)
+%   - cfg (pre/post window for later extraction)
 %   - entries grouped by (stim_channel, current_uA)
+%       each entry stores trial_onset_frame_idx and trial_index
 %
-% This is a single script version. Run the whole file directly.
-
-clc; clear;
-
-%% ---------------- USER INPUTS ----------------
-cfg = struct();
-cfg.pre_sec  = 1;
-cfg.post_sec = 3;
-
-out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-03-17\analysis\LGN11_20260317_wf_stim_aligned_out_ENDALIGNED.mat';
-container_name = 'container_day_pointer_only_ripple_backwards.mat';
-
-%% ---------------- MAIN ----------------
-container_path = make_container_ripple_(out_mat_file, cfg, container_name);
-
-fprintf('\nDone.\nContainer path:\n%s\n', container_path);
-
-%% ============================================================
-% Local functions
-% ============================================================
-
-function container_path = make_container_ripple_(out_mat_file, cfg, container_name)
-% make_container_ripple
-%
-% Single-script version of the Ripple pointer-only container builder.
+% It does NOT store movies, dF/F, maps, peaks, etc.
 
     % ---- FIXED ROOT ----
     dataset_root = 'C:\Albert Li\LGN\LGN11_longitudinal';
 
-    if nargin < 2 || isempty(cfg)
-        cfg = struct();
-    end
+    if nargin < 2 || isempty(cfg), cfg = struct(); end
     cfg = fill_cfg_defaults(cfg);
 
     if nargin < 3 || isempty(container_name)
@@ -66,15 +43,15 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
     subject_id = getfield_safe(out, 'subject_id', '');
     date_str   = getfield_safe(out, 'date_str',   '');
 
-    img_dir        = getfield_safe(out, 'img_dir', '');
-    day_setup_file = getfield_safe(out, 'day_setup_file', '');
-    session_mat    = getfield_safe(out, 'session_mat', '');
-    csv_file       = getfield_safe(out, 'csv_file', '');
-    
-    assert(~isempty(img_dir) && exist(img_dir,'dir')==7, ...
+    img_dir     = getfield_safe(out, 'img_dir', '');
+    mask_file   = getfield_safe(out, 'mask_file', '');
+    session_mat = getfield_safe(out, 'session_mat', '');
+    csv_file    = getfield_safe(out, 'csv_file', '');
+
+    assert(~isempty(img_dir)   && exist(img_dir,'dir')==7, ...
         'out.img_dir missing/invalid.');
-    assert(~isempty(day_setup_file) && exist(day_setup_file,'file')==2, ...
-        'out.day_setup_file missing/invalid.');
+    assert(~isempty(mask_file) && exist(mask_file,'file')==2, ...
+        'out.mask_file missing/invalid.');
     assert(~isempty(session_mat) && exist(session_mat,'file')==2, ...
         'out.session_mat missing/invalid.');
     assert(~isempty(csv_file) && exist(csv_file,'file')==2, ...
@@ -87,7 +64,7 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
     % -----------------------------
     % Pull trial vectors
     % -----------------------------
-    onset = double(getfield_safe(out, 'trial_onset_frame_idx', []));
+    onset = double(getfield_safe(out, 'trial_onset_frame_idx', [])); 
     onset = onset(:);
 
     stim_chan = double(getfield_safe(out, 'trial_stim_chan', []));
@@ -151,7 +128,7 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
 
         C.meta.out_mat_file_rel = relpath(out_mat_file, dataset_root);
         C.meta.img_dir_rel      = relpath(img_dir, dataset_root);
-        C.meta.day_setup_file_rel = relpath(day_setup_file, dataset_root);        
+        C.meta.mask_file_rel    = relpath(mask_file, dataset_root);
         C.meta.session_mat_rel  = relpath(session_mat, dataset_root);
         C.meta.csv_file_rel     = relpath(csv_file, dataset_root);
 
@@ -180,9 +157,7 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         cu = uniq_pairs(g,2);
 
         idx = find(grp == g);
-        if isempty(idx)
-            continue;
-        end
+        if isempty(idx), continue; end
 
         entry = struct();
         entry.key = sprintf('stim%03d_c%s', round(sc), num2str(cu));
@@ -196,7 +171,8 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         entry.img_dir_rel = relpath(img_dir, dataset_root);
 
         entry.provenance = struct();
-        entry.provenance.source_out_mat_rel = relpath(out_mat_file, dataset_root);
+        entry.provenance.source_out_mat_rel = ...
+            relpath(out_mat_file, dataset_root);
         entry.provenance.updated_at = char(datetime('now'));
 
         % Overwrite existing key if present
@@ -204,9 +180,7 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         if isfield(C,'entries') && ~isempty(C.entries)
             keys = string({C.entries.key});
             j = find(keys == string(entry.key), 1);
-            if ~isempty(j)
-                exists_idx = j;
-            end
+            if ~isempty(j), exists_idx = j; end
         end
 
         if isempty(exists_idx)
@@ -222,25 +196,26 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
     fprintf('\nSaved Ripple pointer-only container:\n  %s\n', container_path);
 end
 
+
+% ============================================================
+% Helpers
+% ============================================================
+
 function cfg = fill_cfg_defaults(cfg)
-    if ~isfield(cfg,'pre_sec')
-        cfg.pre_sec = 1.0;
-    end
-    if ~isfield(cfg,'post_sec')
-        cfg.post_sec = 3.0;
-    end
+    if ~isfield(cfg,'pre_sec'),  cfg.pre_sec  = 1.0; end
+    if ~isfield(cfg,'post_sec'), cfg.post_sec = 3.0; end
 end
+
 
 function v = getfield_safe(S, f, default)
     if isstruct(S) && isfield(S,f)
         v = S.(f);
-        if isempty(v)
-            v = default;
-        end
+        if isempty(v), v = default; end
     else
         v = default;
     end
 end
+
 
 function rel = relpath(fullpath, root_dir)
 

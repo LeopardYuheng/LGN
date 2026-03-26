@@ -41,7 +41,7 @@ channels    = [14 16 18 27 35 67 77 81 110 118];
 % channels    = [16  120];
 
 num_trials_per_parameter = 30;
-
+12
 % --- Saving ---
 parent_dir = 'C:\Users\xiela\OneDrive\Desktop\Albert';  % change to your lab root
 base_name  = 'wf_stim_trials';
@@ -165,7 +165,7 @@ try
         xippmex('stimseq', cmd);
         stim_call_time(i)  = toc(t_start);
         trial_wallclock(i) = string(datetime('now'));
-        pause(default_stim_duration_s);
+        pause(stim_duration_s);
         % xippmex('stim', 'enable', 0);
         % pause(0.2);
         % xippmex('stim', 'enable', 1);
@@ -190,12 +190,6 @@ catch
 end
 
 fprintf('Done.\n');
-%% ---------------- Stop ephys recording ----------------
-pause(2);
-% xippmex('trial','stopped', ephys_filename);
-
-xippmex('trial','stopped');
-fprintf('Recording stopped.\n');
 
 %% ---------------- Stop ephys recording ----------------
 pause(2);

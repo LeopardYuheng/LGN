@@ -2,19 +2,14 @@
 %   - Loads {subject}_{date}_dio_stim_timing.mat (contains "session")
 %   - Loads {subject}_{date}_reference_mask_and_retino_alignment.mat (contains "day_setup")
 %   - Sorts TIFF filenames
-%   - Verifies frame alignment
+%   - ALIGNS TIFFS TO THE END of session.frames.time_s
 %   - Loads CSV (trial_index, stim_chan, current_uA)
 %   - Builds clean bookkeeping struct "out"
 %
 % It does NOT compute trial maps or ΔF/F.
 %
 % Output:
-%   analysis/{subject}_{date}_wf_stim_aligned_out.mat
-%
-% Final out contains:
-%   out.reference_mask
-%   out.retino_align
-% in addition to trial timing / CSV alignment / frame bookkeeping
+%   analysis/{subject}_{date}_wf_stim_aligned_out_ENDALIGNED.mat
 
 close all; clc; clear; fclose('all');
 
@@ -30,7 +25,8 @@ if isequal(img_dir,0), error('No image folder selected.'); end
 if isequal(setup_name,0), error('No day setup file selected.'); end
 setup_file = fullfile(setup_path, setup_name);
 
-[ses_name, ses_path] = uigetfile('*.mat', 'Select {subject}_{date}_dio_stim_timing.mat');
+[ses_name, ses_path] = uigetfile('*.mat', ...
+    'Select {subject}_{date}_dio_stim_timing.mat');
 if isequal(ses_name,0), error('No session file selected.'); end
 session_mat = fullfile(ses_path, ses_name);
 
@@ -66,13 +62,11 @@ end
 
 %% -------------------------
 % Pull subject + date
-% Prefer day_setup, then session.metadata, then filename, then prompt
 % -------------------------
 
 subject_id = '';
 date_str   = '';
 
-% 1) Preferred: from day_setup
 if isfield(day_setup,'subject_id') && ~isempty(day_setup.subject_id)
     subject_id = char(string(day_setup.subject_id));
 end
@@ -80,7 +74,6 @@ if isfield(day_setup,'date_str') && ~isempty(day_setup.date_str)
     date_str = char(string(day_setup.date_str));
 end
 
-% 2) Backup: from session metadata
 Xmeta = load(session_mat, 'session');
 assert(isfield(Xmeta,'session'), 'Session file must contain variable "session".');
 session_meta = Xmeta.session;
@@ -103,7 +96,6 @@ if (isempty(strtrim(subject_id)) || isempty(strtrim(date_str))) && isfield(sessi
     end
 end
 
-% 3) Backup: parse from session filename
 if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
     [~, ses_base, ~] = fileparts(session_mat);
     tok = regexp(ses_base, '^(?<subj>[^_]+)_(?<date>\d{8})_', 'names', 'once');
@@ -113,7 +105,6 @@ if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
     end
 end
 
-% 4) Final fallback: prompt user
 if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
     prompt = {'Enter subject ID (e.g., LGN11):', 'Enter date (YYYYMMDD):'};
     dlg_title = 'Metadata (missing from setup/session file)';
@@ -129,7 +120,6 @@ if isempty(strtrim(subject_id)) || isempty(strtrim(date_str))
     date_str   = strtrim(answer{2});
 end
 
-% Validate
 if isempty(subject_id)
     error('Subject ID is required.');
 end
@@ -150,19 +140,19 @@ session = X.session;
 assert(isfield(session,'frames') && isfield(session.frames,'time_s'), ...
     'session.frames.time_s missing');
 
-frame_times_s = session.frames.time_s(:);
+frame_times_s = double(session.frames.time_s(:));
 dt = diff(frame_times_s);
 assert(~isempty(dt), 'Not enough frame times.');
 Freq = 1 / median(dt);
 
 assert(isfield(session,'trains') && isfield(session.trains,'frame_idx'), ...
     'session.trains.frame_idx missing');
-assert(isfield(session.trains,'channel'), ...
+assert(isfield(session,'trains') && isfield(session.trains,'channel'), ...
     'session.trains.channel missing');
 
-train_frame_idx = double(session.trains.frame_idx(:));
-train_channel   = double(session.trains.channel(:));
-n_trains = numel(train_frame_idx);
+train_frame_idx_raw = double(session.trains.frame_idx(:));
+train_channel       = double(session.trains.channel(:));
+n_trains = numel(train_frame_idx_raw);
 
 fprintf('Found %d stim trains.\n', n_trains);
 fprintf('Estimated camera rate: %.3f Hz\n', Freq);
@@ -172,28 +162,55 @@ fprintf('Estimated camera rate: %.3f Hz\n', Freq);
 % -------------------------
 
 image_files = dir(fullfile(img_dir, '*.tif'));
+if isempty(image_files)
+    image_files = dir(fullfile(img_dir, '*.tiff'));
+end
 assert(~isempty(image_files), 'No TIFF files found.');
 
 nFiles = numel(image_files);
 nums = nan(nFiles,1);
 
 for i = 1:nFiles
-    tok = regexp(image_files(i).name, '(\d+)\.tif$', 'tokens', 'once');
+    tok = regexp(image_files(i).name, '(\d+)\.tif{1,2}$', 'tokens', 'once');
     if isempty(tok)
-        error('Filename "%s" missing trailing index.', image_files(i).name);
+        nums(i) = i;
+    else
+        nums(i) = str2double(tok{1});
     end
-    nums(i) = str2double(tok{1});
 end
 
 [~,ord] = sort(nums);
 image_files = image_files(ord);
 
-fprintf('Total TIFF frames: %d\n', numel(image_files));
+n_tiffs = numel(image_files);
+n_cam_frames = numel(frame_times_s);
 
-% Output folder (define early)
-% -------------------------
+fprintf('Total TIFF frames: %d\n', n_tiffs);
+fprintf('Camera frame timestamps: %d\n', n_cam_frames);
+
 analysisFolder = fullfile(fileparts(img_dir), 'analysis');
 if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
+
+%% -------------------------
+% END-ALIGN TIFFs TO CAMERA FRAMES
+% -------------------------
+
+if n_cam_frames < n_tiffs
+    error(['There are fewer camera timestamps (%d) than TIFF frames (%d). ' ...
+           'End alignment is not possible.'], n_cam_frames, n_tiffs);
+end
+
+frame_offset = n_cam_frames - n_tiffs;
+
+% Raw session frame_idx lives in full camera-frame index space.
+% Convert it into TIFF index space assuming TIFFs are the LAST n_tiffs frames.
+train_frame_idx = train_frame_idx_raw - frame_offset;
+
+fprintf('\nEND-ALIGNMENT APPLIED:\n');
+fprintf('  frame_offset = n_cam_frames - n_tiffs = %d\n', frame_offset);
+fprintf('  TIFF frame 1 corresponds to camera frame %d\n', frame_offset + 1);
+fprintf('  TIFF frame %d corresponds to camera frame %d\n', n_tiffs, n_cam_frames);
+
 %% -------------------------
 % Load CSV mapping
 % -------------------------
@@ -235,26 +252,21 @@ else
 end
 
 %% -------------------------
-% Validate frame indices
+% Validate END-ALIGNED frame indices
 % -------------------------
 
-valid_idx = train_frame_idx >= 1 & train_frame_idx <= numel(image_files);
-if ~all(valid_idx)
-    warning('%d stim trains have frame_idx outside TIFF range.', ...
-        sum(~valid_idx));
-end
-%% -------------------------
-% DIAGNOSTIC PLOTS: CAMERA FRAMES VS STIM TRAINS
-% -------------------------
-
-n_tiffs = numel(image_files);
 valid_idx = train_frame_idx >= 1 & train_frame_idx <= n_tiffs;
 bad_idx   = ~valid_idx;
 
-fprintf('\nFrame alignment diagnostics:\n');
+if any(bad_idx)
+    warning('%d stim trains have END-ALIGNED frame_idx outside TIFF range.', sum(bad_idx));
+end
+
+fprintf('\nFrame alignment diagnostics (END-ALIGNED):\n');
 fprintf('  TIFF frames                 : %d\n', n_tiffs);
-fprintf('  Camera frame timestamps     : %d\n', numel(frame_times_s));
-fprintf('  Stim trains                 : %d\n', numel(train_frame_idx));
+fprintf('  Camera frame timestamps     : %d\n', n_cam_frames);
+fprintf('  frame_offset                : %d\n', frame_offset);
+fprintf('  Stim trains                 : %d\n', n_trains);
 fprintf('  Valid stim->frame mappings  : %d\n', sum(valid_idx));
 fprintf('  Invalid stim->frame mappings: %d\n', sum(bad_idx));
 
@@ -262,82 +274,109 @@ if any(bad_idx)
     fprintf('Bad stim train numbers:\n');
     disp(find(bad_idx)');
 
-    fprintf('Bad frame_idx values:\n');
+    fprintf('Bad raw session.trains.frame_idx values:\n');
+    disp(train_frame_idx_raw(bad_idx)');
+
+    fprintf('Bad END-ALIGNED frame_idx values:\n');
     disp(train_frame_idx(bad_idx)');
 end
 
-% Time assigned to each stim train using frame_idx when valid
-stim_times_from_frameidx = nan(size(train_frame_idx));
-stim_times_from_frameidx(valid_idx) = frame_times_s(train_frame_idx(valid_idx));
+%% -------------------------
+% Diagnostic time assignment
+% -------------------------
 
-last_valid_time_s = frame_times_s(min(n_tiffs, numel(frame_times_s)));
+% Time assigned using raw camera-frame indices, but only if the raw index lies
+% inside the last n_tiffs camera frames.
+raw_idx_in_end_window = train_frame_idx_raw >= (frame_offset + 1) & train_frame_idx_raw <= n_cam_frames;
 
-%% Plot 1: full session timeline
-fig_diag1 = figure('Name','Stim-camera alignment overview','Color','w');
+stim_times_from_rawidx = nan(size(train_frame_idx_raw));
+stim_times_from_rawidx(raw_idx_in_end_window) = frame_times_s(train_frame_idx_raw(raw_idx_in_end_window));
+
+first_tiff_time_s = frame_times_s(frame_offset + 1);
+last_tiff_time_s  = frame_times_s(n_cam_frames);
+
+%% -------------------------
+% Plot 1: full session timeline
+% -------------------------
+
+fig_diag1 = figure('Name','Stim-camera alignment overview END-ALIGNED','Color','w');
 hold on;
 
-% Camera frames as black dots along y=1
 plot(frame_times_s, ones(size(frame_times_s)), 'k.', 'MarkerSize', 4);
 
-% Valid stim trains as blue circles at y=1.05
-plot(stim_times_from_frameidx(valid_idx), 1.05*ones(sum(valid_idx),1), ...
+plot(stim_times_from_rawidx(valid_idx), 1.05*ones(sum(valid_idx),1), ...
     'bo', 'MarkerSize', 4, 'LineWidth', 1);
 
-% Invalid stim trains placed at the last valid time just for visibility
 if any(bad_idx)
-    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.10*ones(sum(bad_idx),1), ...
+    plot(last_tiff_time_s * ones(sum(bad_idx),1), 1.10*ones(sum(bad_idx),1), ...
         'rx', 'MarkerSize', 8, 'LineWidth', 1.5);
 end
 
-xline(last_valid_time_s, 'r--', 'LineWidth', 1.5, ...
-    'Label', 'Last TIFF-backed frame', 'LabelVerticalAlignment', 'bottom');
+xline(first_tiff_time_s, 'g--', 'LineWidth', 1.5, ...
+    'Label', 'First TIFF-backed frame (end-aligned)', ...
+    'LabelVerticalAlignment', 'bottom');
+
+xline(last_tiff_time_s, 'r--', 'LineWidth', 1.5, ...
+    'Label', 'Last TIFF-backed frame', ...
+    'LabelVerticalAlignment', 'bottom');
 
 ylim([0.98 1.12]);
 xlabel('Time (s)');
 yticks([1.00 1.05 1.10]);
 yticklabels({'Camera frames','Valid stim trains','Invalid stim trains'});
-title('Full session: camera frames vs stim trains');
+title('Full session: camera frames vs stim trains (END-ALIGNED)');
 grid on;
 
 saveas(fig_diag1, fullfile(analysisFolder, ...
-    sprintf('%s_%s_alignment_diagnostic_overview.png', subject_id, date_str)));
+    sprintf('%s_%s_alignment_diagnostic_overview_ENDALIGNED.png', subject_id, date_str)));
 
-%% Plot 2: zoom in on end of session
-fig_diag2 = figure('Name','Stim-camera alignment end zoom','Color','w');
+%% -------------------------
+% Plot 2: zoom in on end of session
+% -------------------------
+
+fig_diag2 = figure('Name','Stim-camera alignment end zoom END-ALIGNED','Color','w');
 hold on;
 
 t_end = frame_times_s(end);
-zoom_window_s = 60; % last 60 seconds
+zoom_window_s = 60;
 t_start_zoom = max(frame_times_s(1), t_end - zoom_window_s);
 
 frame_keep = frame_times_s >= t_start_zoom;
 plot(frame_times_s(frame_keep), ones(sum(frame_keep),1), 'k.', 'MarkerSize', 6);
 
-valid_keep = valid_idx & stim_times_from_frameidx >= t_start_zoom;
-plot(stim_times_from_frameidx(valid_keep), 1.05*ones(sum(valid_keep),1), ...
+valid_keep = valid_idx & stim_times_from_rawidx >= t_start_zoom;
+plot(stim_times_from_rawidx(valid_keep), 1.05*ones(sum(valid_keep),1), ...
     'bo', 'MarkerSize', 5, 'LineWidth', 1);
 
 if any(bad_idx)
-    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.10*ones(sum(bad_idx),1), ...
+    plot(last_tiff_time_s * ones(sum(bad_idx),1), 1.10*ones(sum(bad_idx),1), ...
         'rx', 'MarkerSize', 9, 'LineWidth', 1.5);
 end
 
-xline(last_valid_time_s, 'r--', 'LineWidth', 1.5, ...
-    'Label', 'Last TIFF-backed frame', 'LabelVerticalAlignment', 'bottom');
+xline(first_tiff_time_s, 'g--', 'LineWidth', 1.5, ...
+    'Label', 'First TIFF-backed frame', ...
+    'LabelVerticalAlignment', 'bottom');
+
+xline(last_tiff_time_s, 'r--', 'LineWidth', 1.5, ...
+    'Label', 'Last TIFF-backed frame', ...
+    'LabelVerticalAlignment', 'bottom');
 
 xlim([t_start_zoom t_end]);
 ylim([0.98 1.12]);
 xlabel('Time (s)');
 yticks([1.00 1.05 1.10]);
 yticklabels({'Camera frames','Valid stim trains','Invalid stim trains'});
-title('End of session zoom');
+title('End of session zoom (END-ALIGNED)');
 grid on;
 
 saveas(fig_diag2, fullfile(analysisFolder, ...
-    sprintf('%s_%s_alignment_diagnostic_endzoom.png', subject_id, date_str)));
+    sprintf('%s_%s_alignment_diagnostic_endzoom_ENDALIGNED.png', subject_id, date_str)));
 
-%% Plot 3: frame index space directly
-fig_diag3 = figure('Name','Stim frame_idx diagnostic','Color','w');
+%% -------------------------
+% Plot 3: frame index space directly
+% -------------------------
+
+fig_diag3 = figure('Name','Stim frame_idx diagnostic END-ALIGNED','Color','w');
 hold on;
 
 plot(1:n_tiffs, ones(1,n_tiffs), 'k.', 'MarkerSize', 4);
@@ -349,37 +388,44 @@ if any(bad_idx)
         'rx', 'MarkerSize', 8, 'LineWidth', 1.5);
 end
 
+xline(1, 'g--', 'LineWidth', 1.5, ...
+    'Label', 'First TIFF index', 'LabelVerticalAlignment', 'bottom');
 xline(n_tiffs, 'r--', 'LineWidth', 1.5, ...
     'Label', 'Last TIFF index', 'LabelVerticalAlignment', 'bottom');
 
-xlabel('Frame index');
+xlabel('END-ALIGNED TIFF frame index');
 yticks([1.00 1.05 1.10]);
 yticklabels({'Existing TIFF frames','Valid stim frame_idx','Invalid stim frame_idx'});
-title('Frame index diagnostic');
+title('Frame index diagnostic (END-ALIGNED)');
 grid on;
 
 saveas(fig_diag3, fullfile(analysisFolder, ...
-    sprintf('%s_%s_alignment_diagnostic_frameidx.png', subject_id, date_str)));
+    sprintf('%s_%s_alignment_diagnostic_frameidx_ENDALIGNED.png', subject_id, date_str)));
+
 %% -------------------------
 % Sanity checks against day_setup
 % -------------------------
 
 if isfield(day_setup,'img_dir')
     if ~strcmpi(string(day_setup.img_dir), string(img_dir))
-        warning('Selected img_dir differs from day_setup.img_dir.\n  img_dir: %s\n  day_setup.img_dir: %s', ...
-            img_dir, day_setup.img_dir);
+        warning(['Selected img_dir differs from day_setup.img_dir.\n' ...
+                 '  img_dir: %s\n  day_setup.img_dir: %s'], ...
+                 img_dir, day_setup.img_dir);
     end
 end
 
 if isfield(day_setup.reference_mask,'img_dir')
     if ~strcmpi(string(day_setup.reference_mask.img_dir), string(img_dir))
-        warning('Selected img_dir differs from day_setup.reference_mask.img_dir.\n  img_dir: %s\n  refmask.img_dir: %s', ...
-            img_dir, day_setup.reference_mask.img_dir);
+        warning(['Selected img_dir differs from day_setup.reference_mask.img_dir.\n' ...
+                 '  img_dir: %s\n  refmask.img_dir: %s'], ...
+                 img_dir, day_setup.reference_mask.img_dir);
     end
 end
 
-if ~isequal(size(final_mask), size(day_setup.reference_mask.ref_img))
-    warning('final_mask size does not match day_setup.reference_mask.ref_img size.');
+if isfield(day_setup.reference_mask,'ref_img')
+    if ~isequal(size(final_mask), size(day_setup.reference_mask.ref_img))
+        warning('final_mask size does not match day_setup.reference_mask.ref_img size.');
+    end
 end
 
 if isfield(day_setup.retino_align,'V1_mask_stim') && ~isempty(day_setup.retino_align.V1_mask_stim)
@@ -387,19 +433,22 @@ if isfield(day_setup.retino_align,'V1_mask_stim') && ~isempty(day_setup.retino_a
         warning('V1_mask_stim size does not match final_mask size.');
     end
 end
+
 if any(bad_idx)
     bad_table = table( ...
         find(bad_idx), ...
+        train_frame_idx_raw(bad_idx), ...
         train_frame_idx(bad_idx), ...
         trial_stim_chan(bad_idx), ...
         trial_current_uA(bad_idx), ...
-        'VariableNames', {'stim_train_number','frame_idx','stim_chan','current_uA'});
+        'VariableNames', {'stim_train_number','raw_frame_idx','end_aligned_frame_idx','stim_chan','current_uA'});
 
     disp(bad_table);
 
     writetable(bad_table, fullfile(analysisFolder, ...
-        sprintf('%s_%s_bad_stim_trains.csv', subject_id, date_str)));
+        sprintf('%s_%s_bad_stim_trains_ENDALIGNED.csv', subject_id, date_str)));
 end
+
 %% -------------------------
 % Build FINAL out struct
 % -------------------------
@@ -415,26 +464,31 @@ out.session_mat    = session_mat;
 out.csv_file       = csv_file;
 
 out.image_files_sorted = {image_files.name}';
-out.n_frames           = numel(image_files);
+out.n_frames           = n_tiffs;
 
 out.Freq          = Freq;
 out.frame_times_s = frame_times_s;
 
-out.trial_onset_frame_idx = train_frame_idx;
-out.trial_channel         = train_channel;
-out.trial_stim_chan       = trial_stim_chan;
-out.trial_current_uA      = trial_current_uA;
+% Save both raw and end-aligned versions
+out.trial_onset_frame_idx_raw         = train_frame_idx_raw;
+out.trial_onset_frame_idx             = train_frame_idx;
+out.trial_frame_idx_alignment_mode    = 'end_aligned_to_last_n_tiffs';
+out.frame_offset                      = frame_offset;
+out.first_tiff_camera_frame_idx       = frame_offset + 1;
+out.last_tiff_camera_frame_idx        = n_cam_frames;
+
+out.trial_channel    = train_channel;
+out.trial_stim_chan  = trial_stim_chan;
+out.trial_current_uA = trial_current_uA;
 
 out.n_trials = n_trains;
 
 out.mask_size = size(final_mask);
 out.crop_rect = crop_rect;
 
-% Add full day setup products directly into out
 out.reference_mask = day_setup.reference_mask;
 out.retino_align   = day_setup.retino_align;
 
-% Optional convenience top-level shortcuts
 out.final_mask = day_setup.reference_mask.final_mask;
 
 if isfield(day_setup.retino_align,'V1_mask_stim')
@@ -453,13 +507,10 @@ out.created_on = datestr(now);
 % Save
 % -------------------------
 
-analysisFolder = fullfile(fileparts(img_dir), 'analysis');
-if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
-
-saveName = sprintf('%s_%s_wf_stim_aligned_out.mat', subject_id, date_str);
+saveName = sprintf('%s_%s_wf_stim_aligned_out_ENDALIGNED.mat', subject_id, date_str);
 savePath = fullfile(analysisFolder, saveName);
 
 save(savePath, 'out', '-v7.3');
 
-fprintf('\nSaved final aligned out file:\n  %s\n', savePath);
+fprintf('\nSaved final END-ALIGNED out file:\n  %s\n', savePath);
 fprintf('This file now contains bookkeeping + reference_mask + retino_align.\n');

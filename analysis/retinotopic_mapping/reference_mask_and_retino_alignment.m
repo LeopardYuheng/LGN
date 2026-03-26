@@ -22,7 +22,8 @@
 %   - Optionally supports auto affine + manual nudge
 %   - Forces all retino-side objects into one consistent space:
 %       azi/alt space
-%   - Saves V1_mask_stim, azi_stim, alt_stim into the same setup file
+%   - Saves V1_mask_stim, azi_stim, alt_stim, VFS_stim into the same setup file
+%   - Reuses a master V1 mask in retino space so you only draw it once
 
 close all; clc; clear; fclose('all');
 
@@ -33,7 +34,7 @@ RUN_OPTION_A = true;    % manual cpselect affine
 RUN_OPTION_B = false;   % auto affine + manual nudge
 USE_VFS_BOUNDARIES_IF_AVAILABLE = true;
 NREF = 200;             % number of TIFF frames to average for stim reference
-FORCE_REDRAW_V1 = true; % safest while establishing consistent geometry
+FORCE_REDRAW_V1 = false; % set true only if you want to redraw V1 intentionally
 
 %% -------------------------
 % SELECT INPUTS
@@ -69,6 +70,9 @@ end
 % Output folder
 analysisFolder = fullfile(fileparts(img_dir), 'analysis');
 if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
+
+% Master V1 mask path
+v1MaskFile = fullfile(analysisFolder, sprintf('%s_V1_mask_retino_master.mat', subject_id));
 
 %% -------------------------
 % LOAD RETINOTOPY DATA
@@ -120,11 +124,9 @@ if USE_VFS_BOUNDARIES_IF_AVAILABLE && isfield(R,'VFS_boundaries') && ~isempty(R.
     retOverlay = R.VFS_boundaries;
 elseif isfield(R,'VFS_processed') && ~isempty(R.VFS_processed)
     retOverlay = R.VFS_processed;
-elseif isfield(R,'VFS_boundaries') && ~isempty(R.VFS_boundaries)
-    retOverlay = R.VFS_boundaries;
-elseif isfield(S,'VFS_processed')
+elseif isfield(S,'VFS_processed') && ~isempty(S.VFS_processed)
     retOverlay = S.VFS_processed;
-elseif isfield(S,'VFS_boundaries')
+elseif isfield(S,'VFS_boundaries') && ~isempty(S.VFS_boundaries)
     retOverlay = S.VFS_boundaries;
 end
 
@@ -134,14 +136,45 @@ if ~isempty(retOverlay)
     end
 end
 
-% V1 mask in retino space
+%% -------------------------
+% LOAD OR REUSE V1 MASK IN RETINO SPACE
+% -------------------------
 V1_mask_retino = [];
+V1_vertices_retino = [];
+
+% First try retino file
 if ~FORCE_REDRAW_V1
     if isfield(R,'V1_mask_retino') && ~isempty(R.V1_mask_retino)
         V1_mask_retino = logical(R.V1_mask_retino);
-        if size(V1_mask_retino,1) ~= retino_target_size(1) || size(V1_mask_retino,2) ~= retino_target_size(2)
+
+        if size(V1_mask_retino,1) ~= retino_target_size(1) || ...
+           size(V1_mask_retino,2) ~= retino_target_size(2)
             V1_mask_retino = imresize(V1_mask_retino, retino_target_size, 'nearest') > 0.5;
         end
+
+        fprintf('Loaded V1_mask_retino from retino file.\n');
+    end
+end
+
+% If not found, try master saved mask
+if isempty(V1_mask_retino) && ~FORCE_REDRAW_V1
+    if exist(v1MaskFile, 'file')
+        M = load(v1MaskFile);
+
+        if isfield(M,'V1_mask_retino') && ~isempty(M.V1_mask_retino)
+            V1_mask_retino = logical(M.V1_mask_retino);
+
+            if size(V1_mask_retino,1) ~= retino_target_size(1) || ...
+               size(V1_mask_retino,2) ~= retino_target_size(2)
+                V1_mask_retino = imresize(V1_mask_retino, retino_target_size, 'nearest') > 0.5;
+            end
+        end
+
+        if isfield(M,'V1_vertices_retino')
+            V1_vertices_retino = M.V1_vertices_retino;
+        end
+
+        fprintf('Loaded reusable V1 retino mask:\n  %s\n', v1MaskFile);
     end
 end
 
@@ -175,7 +208,8 @@ if isempty(V1_mask_retino)
     hpoly = drawpolygon('Color','y','LineWidth',2);
     wait(hpoly);
 
-    V1_mask_retino = poly2mask(hpoly.Position(:,1), hpoly.Position(:,2), ...
+    V1_vertices_retino = hpoly.Position;
+    V1_mask_retino = poly2mask(V1_vertices_retino(:,1), V1_vertices_retino(:,2), ...
         size(retRefG,1), size(retRefG,2));
 
     figure('Name','Verify V1 mask in retino space','Color','w');
@@ -183,6 +217,18 @@ if isempty(V1_mask_retino)
     visboundaries(V1_mask_retino, 'Color','y', 'LineWidth', 1.5);
     title('Verify V1_mask_retino on retino reference');
     axis image;
+
+    % Save reusable master file
+    save(v1MaskFile, 'V1_mask_retino', 'V1_vertices_retino', 'retino_file');
+    fprintf('Saved reusable V1 retino mask:\n  %s\n', v1MaskFile);
+
+    % Try to append to retino file too
+    try
+        save(retino_file, 'V1_mask_retino', '-append');
+        fprintf('Appended V1_mask_retino to retino file.\n');
+    catch
+        warning('Could not append V1_mask_retino to retino file. Master file will still be used.');
+    end
 end
 
 assert(isequal(size(V1_mask_retino), size(retRefG)), ...
@@ -196,6 +242,8 @@ retOverlay_warp = [];
 V1_mask_stim = [];
 azi_stim = [];
 alt_stim = [];
+VFS_retino = [];
+VFS_stim = [];
 tform_used = [];
 tform_type = '';
 
@@ -253,6 +301,25 @@ if RUN_OPTION_B
 end
 
 %% -------------------------
+% COMPUTE VISUAL FIELD SIGN (RETINO -> STIM SPACE)
+% NO SMOOTHING
+% -------------------------
+if ~isempty(azi_stim) && ~isempty(alt_stim) && ~isempty(V1_mask_stim)
+
+    [dAzi_dx, dAzi_dy] = gradient(double(azi));
+    [dAlt_dx, dAlt_dy] = gradient(double(alt));
+
+    VFS_retino = dAzi_dx .* dAlt_dy - dAzi_dy .* dAlt_dx;
+
+    maxAbsVFS = max(abs(VFS_retino(:)), [], 'omitnan');
+    if maxAbsVFS > 0
+        VFS_retino = VFS_retino ./ maxAbsVFS;
+    end
+
+    VFS_stim = imwarp(VFS_retino, tform_used, 'OutputView', Rfixed);
+end
+
+%% -------------------------
 % QC
 % -------------------------
 fig1 = figure('Name','Retino vs Stim QC','Color','w');
@@ -286,6 +353,68 @@ if ~isempty(retOverlay_warp)
 end
 
 %% -------------------------
+% AZIMUTH / ALTITUDE / VFS MAPS WITH V1 OVERLAY
+% -------------------------
+if ~isempty(azi_stim) && ~isempty(alt_stim) && ~isempty(V1_mask_stim)
+
+    % Azimuth
+    fig4 = figure('Name','Azimuth map with warped V1 boundary','Color','w');
+    imagesc(azi_stim);
+    axis image;
+    set(gca, 'YDir', 'normal');
+    colormap(gca, parula);
+    cb = colorbar;
+    cb.Label.String = 'Azimuth (deg)';
+    hold on;
+    visboundaries(V1_mask_stim, 'Color','w', 'LineWidth', 2);
+    title('Azimuth map with warped V1 mask overlay');
+    saveas(fig4, fullfile(analysisFolder, ...
+        sprintf('%s_%s_azimuth_map_with_V1_overlay.png', subject_id, date_str)));
+
+    % Altitude
+    fig5 = figure('Name','Altitude map with warped V1 boundary','Color','w');
+    imagesc(alt_stim);
+    axis image;
+    set(gca, 'YDir', 'normal');
+    colormap(gca, parula);
+    cb = colorbar;
+    cb.Label.String = 'Altitude (deg)';
+    hold on;
+    visboundaries(V1_mask_stim, 'Color','w', 'LineWidth', 2);
+    title('Altitude map with warped V1 mask overlay');
+    saveas(fig5, fullfile(analysisFolder, ...
+        sprintf('%s_%s_altitude_map_with_V1_overlay.png', subject_id, date_str)));
+
+    % VFS with overlay
+    fig6 = figure('Name','Visual Field Sign (stim space)','Color','w');
+    imagesc(VFS_stim);
+    axis image;
+    set(gca,'YDir','normal');
+    colormap(gca, jet);
+    caxis([-1 1]);
+    cb = colorbar;
+    cb.Label.String = 'Visual Field Sign';
+    hold on;
+    visboundaries(V1_mask_stim, 'Color','w', 'LineWidth', 2);
+    title('Visual Field Sign (stim space with V1 overlay)');
+    saveas(fig6, fullfile(analysisFolder, ...
+        sprintf('%s_%s_visual_field_sign_stim.png', subject_id, date_str)));
+
+    % Clean VFS
+    fig7 = figure('Name','Visual Field Sign clean','Color','w');
+    imagesc(VFS_stim);
+    axis image;
+    set(gca,'YDir','normal');
+    colormap(gca, jet);
+    caxis([-1 1]);
+    cb = colorbar;
+    cb.Label.String = 'Visual Field Sign';
+    title('Visual Field Sign (stim space)');
+    saveas(fig7, fullfile(analysisFolder, ...
+        sprintf('%s_%s_visual_field_sign_stim_clean.png', subject_id, date_str)));
+end
+
+%% -------------------------
 % BUILD DAY_SETUP STRUCT
 % -------------------------
 day_setup = struct();
@@ -303,11 +432,16 @@ day_setup.retino_align.ReferenceImage_stim = retRef_warp;
 day_setup.retino_align.stim_reference_image = stimRef;
 day_setup.retino_align.retOverlay_stim = retOverlay_warp;
 day_setup.retino_align.V1_mask_retino = V1_mask_retino;
+day_setup.retino_align.V1_vertices_retino = V1_vertices_retino;
 day_setup.retino_align.V1_mask_stim = V1_mask_stim;
 day_setup.retino_align.azi_stim = azi_stim;
 day_setup.retino_align.alt_stim = alt_stim;
+day_setup.retino_align.VFS_retino = VFS_retino;
+day_setup.retino_align.VFS_stim = VFS_stim;
 day_setup.retino_align.tform = tform_used;
 day_setup.retino_align.tform_type = tform_type;
+day_setup.retino_align.azi_stim_v1_only = azi_stim .* double(V1_mask_stim);
+day_setup.retino_align.alt_stim_v1_only = alt_stim .* double(V1_mask_stim);
 
 %% -------------------------
 % SAVE

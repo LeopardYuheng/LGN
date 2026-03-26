@@ -1,810 +1,623 @@
-%% current_thresholding_analysis_fixedROI_with_visualfield.m
-% Fixed ROI per channel + visual field mapping
+%% current_thresholding_V1_cluster_sharedclim_option.m
+% ROI-free threshold analysis using V1-restricted pixelwise significance
+% and cluster detection, based on grouped Ripple container entries.
 %
-% Requires:
-%   - final aligned out file containing (Ex. LGN11_20260210_wf_stim_aligned_out):
-%       out.reference_mask.final_mask
-%       out.retino_align.V1_mask_stim
-%       out.retino_align.azi_stim
-%       out.retino_align.alt_stim
-%   - wf utilities on path:
-%       wf_sort_tiffs
-%       wf_mean_evoked_map
-%       wf_read_tiff_frame
+% CHANGES:
+%   1) Uses the SAME displayed mean evoked map as the montage script:
+%        mean_evoked_map = mean(dff_cur, 3, 'omitnan')
+%   2) Does NOT subtract the 0 uA map again
+%   3) Adds option to use a shared CLim across channel plots or not
 %
-% Output:
-%   - per-channel fixed ROI threshold results
-%   - visual field coordinates per channel
-%   - summary scatter plot in visual space
-%   - explicit mean evoked dF/F maps at 7 uA
+% Uses:
+%   - container C
+%   - C.cfg.pre_sec / C.cfg.post_sec
+%   - day_setup.reference_mask.final_mask
+%   - day_setup.retino_align.V1_mask_stim
+%   - day_setup.retino_align.azi_stim
+%   - day_setup.retino_align.alt_stim
+%
+% Outputs:
+%   - per-channel threshold estimates
+%   - per-current cluster metrics
+%   - visual field scatter plot
+%   - saved summary MAT
 
 close all; clc; clear; fclose('all');
-addpath('C:\Users\LuanLab\OneDrive - Rice University\Documents\GitHub\Luan_lab_retinomap-pipeline\analysis\stim_parameter_survey\functions');
 
 %% -------------------------
-% USER SELECT FILES
+% USER OPTIONS
 % -------------------------
-[fn, fp] = uigetfile('*.mat', 'Select final aligned out file (contains out)');
-if isequal(fn,0), error('No .mat selected.'); end
-R = load(fullfile(fp, fn));
-assert(isfield(R,'out'), 'Selected .mat must contain struct variable "out".');
-out = R.out;
+Fs = 10;                        % camera rate
+response_sec = [0 1.0];         % post-stim response window
+alpha = 0.05;                   % t-test alpha
+min_cluster_size = 15;          % cluster size threshold
+conn = 8;                       % connectivity for bwconncomp
 
-assert(isfield(out,'img_dir') && exist(out.img_dir,'dir')==7, 'out.img_dir missing or not found.');
-img_dir = out.img_dir;
+use_shared_clim = true;         % true = one CLim across all anchor plots
+shared_clim = [-0.06 0.06];               % leave [] to auto-compute from all anchor maps
+                                % or set manually, e.g. [-0.01 0.02]
 
-% onset frames: either directly in out, or from out.session_mat
-if isfield(out,'trial_onset_frame_idx')
-    trial_onset_frame_idx = double(out.trial_onset_frame_idx(:));
-elseif isfield(out,'session_mat')
-    X = load(out.session_mat,'session');
-    assert(isfield(X,'session') && isfield(X.session,'trains') && isfield(X.session.trains,'frame_idx'), ...
-        'session_mat does not contain session.trains.frame_idx');
-    trial_onset_frame_idx = double(X.session.trains.frame_idx(:));
+mask_outside_for_display = false;  % false matches montage look better
+use_analysis_mask_for_stats = true; % true = stats only inside final_mask & V1_mask
+
+%% -------------------------
+% LOAD CONTAINER
+% -------------------------
+[fn, fp] = uigetfile('*.mat', 'Select container (C)');
+if isequal(fn,0), error('No file selected'); end
+
+S = load(fullfile(fp, fn));
+assert(isfield(S,'C'), 'Selected file must contain struct C.');
+C = S.C;
+
+assert(isfield(C,'meta'), 'C.meta missing.');
+assert(isfield(C,'cfg'), 'C.cfg missing.');
+assert(isfield(C,'entries') && ~isempty(C.entries), 'C.entries missing or empty.');
+
+%% -------------------------
+% RESOLVE PATHS
+% -------------------------
+dataset_root = C.meta.dataset_root;
+
+p_day = C.meta.day_setup_file_rel;
+if exist(p_day, 'file') == 2
+    day_setup_file = p_day;
 else
-    error('Need out.trial_onset_frame_idx OR out.session_mat with session.trains.frame_idx.');
+    day_setup_file = fullfile(dataset_root, p_day);
 end
-Ntr = numel(trial_onset_frame_idx);
-assert(Ntr > 0, 'No trials found.');
 
-%% -------------------------
-% load masks / retino directly from out
-% -------------------------
-assert(isfield(out,'reference_mask') && isfield(out.reference_mask,'final_mask'), ...
-    'out.reference_mask.final_mask missing.');
-final_mask = logical(out.reference_mask.final_mask);
-
-if isfield(out.reference_mask,'crop_rect')
-    crop_rect = out.reference_mask.crop_rect;
+p_img = C.meta.img_dir_rel;
+if exist(p_img, 'dir') == 7
+    img_dir = p_img;
 else
-    crop_rect = [];
+    img_dir = fullfile(dataset_root, p_img);
 end
 
-USE_V1_MASK = true;
-if isfield(out,'retino_align') && isfield(out.retino_align,'V1_mask_stim') && ~isempty(out.retino_align.V1_mask_stim)
-    V1_mask_stim = logical(out.retino_align.V1_mask_stim);
-else
-    warning('out.retino_align.V1_mask_stim missing. Using full final_mask only.');
-    USE_V1_MASK = false;
-    V1_mask_stim = true(size(final_mask));
-end
+fprintf('Resolved dataset_root:\n  %s\n', dataset_root);
+fprintf('Resolved day_setup_file:\n  %s\n', day_setup_file);
+fprintf('Resolved img_dir:\n  %s\n', img_dir);
 
-USE_RETINO = true;
-if isfield(out,'retino_align') && isfield(out.retino_align,'azi_stim') && isfield(out.retino_align,'alt_stim') ...
-        && ~isempty(out.retino_align.azi_stim) && ~isempty(out.retino_align.alt_stim)
-    azi_stim = double(out.retino_align.azi_stim);
-    alt_stim = double(out.retino_align.alt_stim);
-else
-    warning('out.retino_align.azi_stim / alt_stim missing. Visual field mapping disabled.');
-    USE_RETINO = false;
-    azi_stim = [];
-    alt_stim = [];
-end
-
-assert(isequal(size(final_mask), size(V1_mask_stim)), 'final_mask and V1_mask_stim size mismatch.');
-if USE_RETINO
-    assert(isequal(size(final_mask), size(azi_stim)), 'azi_stim size mismatch.');
-    assert(isequal(size(final_mask), size(alt_stim)), 'alt_stim size mismatch.');
-end
-
-analysis_mask = final_mask & logical(V1_mask_stim);
-assert(nnz(analysis_mask) > 0, 'analysis_mask is empty.');
+assert(exist(day_setup_file, 'file') == 2, ...
+    'Resolved day_setup_file does not exist.');
+assert(exist(img_dir, 'dir') == 7, ...
+    'Resolved img_dir does not exist.');
 
 %% -------------------------
-% CSV mapping
+% LOAD DAY SETUP
 % -------------------------
-[csv_name, csv_path] = uigetfile({'*.csv;*.txt','CSV or TXT (*.csv, *.txt)'}, ...
-    'Select CSV: trial_index, stim_chan, current_uA');
-if isequal(csv_name,0), error('No CSV selected.'); end
-csv_file = fullfile(csv_path, csv_name);
-Tcsv = readtable(csv_file);
+D = load(day_setup_file);
+assert(isfield(D,'day_setup'), 'day_setup missing from file.');
+day_setup = D.day_setup;
+
+final_mask = logical(day_setup.reference_mask.final_mask);
+V1_mask    = logical(day_setup.retino_align.V1_mask_stim);
+analysis_mask = final_mask & V1_mask;
+
+azi_stim = day_setup.retino_align.azi_stim;
+alt_stim = day_setup.retino_align.alt_stim;
+
+[H,W] = size(analysis_mask);
 
 %% -------------------------
-% Output folder
+% LOAD TIFF FILES
 % -------------------------
-save_root = uigetdir(pwd, 'Select OUTPUT folder to save results');
-if isequal(save_root,0), save_root = pwd; end
-out_dir = fullfile(save_root, 'autoROI_threshold_fixed_visualfield');
-if exist(out_dir,'dir')~=7, mkdir(out_dir); end
+image_files = [dir(fullfile(img_dir, '*.tif')); dir(fullfile(img_dir, '*.tiff'))];
+assert(~isempty(image_files), 'No TIFFs found');
 
-%% -------------------------
-% USER PARAMS
-% -------------------------
-roi_radius_px = input('Enter ROI radius (pixels): ');
-assert(isfinite(roi_radius_px) && roi_radius_px > 0, 'ROI radius must be > 0.');
-
-polarity = 'pos';                 % 'pos' or 'neg'
-response_metric = 'mean_respwin'; % 'mean_respwin' or 'peak_respwin'
-
-ANCHOR_RULE = 'max_current';      % 'max_current' or 'user_value'
-ANCHOR_CURRENT_VALUE = NaN;       % used if user_value
-
-alpha = 0.05;
-use_ci_rule = true;
-z = 1.96;
-
-SAVE_PER_CHANNEL_FIGS = true;
-SAVE_MASTER_SUMMARY   = true;
-SAVE_VISUAL_FIELD_FIG = true;
-
-SAVE_7UA_MAPS = true;
-TARGET_MAP_CURRENT = 7;
-
-% Contour thresholds
-MAP_THRESHOLD_FRAC = 0.70;   % for white contour on 7 uA dF/F map
-VF_THRESHOLD_FRAC  = 0.70;   % for visual field centroid activation region
-
-% dF/F map display settings
-USE_PERCENT_DFF    = true;   % true -> show dF/F in percent
-USE_FIXED_DFF_CLIM = true;
-
-if USE_PERCENT_DFF
-    DFF_CLIM = [-5 20];      % percent dF/F
-else
-    DFF_CLIM = [-0.05 0.20]; % fractional dF/F
+nums = nan(numel(image_files),1);
+for i = 1:numel(image_files)
+    tok = regexp(image_files(i).name, '(\d+)\.(tif|tiff)$', 'tokens', 'once');
+    assert(~isempty(tok), 'Filename missing trailing numeric index: %s', image_files(i).name);
+    nums(i) = str2double(tok{1});
 end
+[~,ord] = sort(nums);
+image_files = image_files(ord);
+
+nFrames = numel(image_files);
+fprintf('Found %d TIFF frames.\n', nFrames);
 
 %% -------------------------
-% Get timing parameters from out
+% CAMERA RATE / WINDOWS FROM CONTAINER
 % -------------------------
-if isfield(out,'Freq')
-    Freq = out.Freq;
-elseif isfield(out,'session_mat')
-    X = load(out.session_mat,'session');
-    if isfield(X,'session') && isfield(X.session,'frames') && isfield(X.session.frames,'time_s')
-        dt = diff(double(X.session.frames.time_s(:)));
-        Freq = 1 / median(dt);
+pre_sec  = double(C.cfg.pre_sec);
+post_sec = double(C.cfg.post_sec);
+
+pre_frames  = round(pre_sec * Fs);
+post_frames = round(post_sec * Fs);
+
+full_win = -pre_frames:post_frames;
+baseline_idx = full_win < 0;
+response_idx = full_win > response_sec(1) & full_win <= response_sec(2);
+
+assert(any(baseline_idx), 'No baseline frames selected.');
+assert(any(response_idx), 'No response frames selected.');
+
+fprintf('Camera rate: %.3f Hz\n', Fs);
+fprintf('pre_sec = %.3f, post_sec = %.3f\n', pre_sec, post_sec);
+fprintf('Baseline frames: %d\n', sum(baseline_idx));
+fprintf('Response frames: %d\n', sum(response_idx));
+
+%% -------------------------
+% RECONSTRUCT PER-TRIAL VECTORS FROM GROUPED ENTRIES
+% -------------------------
+entries = C.entries;
+
+frame_idx = [];
+channels  = [];
+currents  = [];
+trial_index = [];
+
+for i = 1:numel(entries)
+
+    assert(isfield(entries(i), 'trial_onset_frame_idx'), ...
+        'Entry %d missing trial_onset_frame_idx', i);
+    assert(isfield(entries(i), 'stim_channel'), ...
+        'Entry %d missing stim_channel', i);
+    assert(isfield(entries(i), 'current_uA'), ...
+        'Entry %d missing current_uA', i);
+
+    onset_i = double(entries(i).trial_onset_frame_idx(:));
+    n_i = numel(onset_i);
+
+    frame_idx = [frame_idx; onset_i];
+    channels  = [channels; repmat(double(entries(i).stim_channel), n_i, 1)];
+    currents  = [currents; repmat(double(entries(i).current_uA), n_i, 1)];
+
+    if isfield(entries(i), 'trial_index') && ~isempty(entries(i).trial_index)
+        trial_index = [trial_index; double(entries(i).trial_index(:))];
     else
-        error('No out.Freq and cannot infer from session.frames.time_s.');
+        trial_index = [trial_index; nan(n_i,1)];
     end
-else
-    error('No out.Freq and no out.session_mat to infer it.');
 end
 
-if isfield(out,'before_time')
-    before_s = out.before_time;
-else
-    before_s = input('before_time (s): ');
-end
+valid = isfinite(frame_idx) & isfinite(channels) & isfinite(currents) & ...
+        frame_idx > pre_frames & frame_idx <= (nFrames - post_frames);
 
-if isfield(out,'after_time')
-    after_s = out.after_time;
-else
-    after_s = input('after_time (s): ');
-end
+fprintf('Keeping %d / %d trials after frame validity filter.\n', ...
+    sum(valid), numel(frame_idx));
 
-if isfield(out,'resp_win')
-    resp_win = out.resp_win;
-else
-    resp_win = input('resp_win [t1 t2] (s): ');
-end
-
-preFrames  = round(before_s * Freq);
-postFrames = round(after_s  * Freq);
-L          = preFrames + postFrames + 1;
-
-t = ((0:L-1)/Freq) - before_s;
-base_idx = 1:preFrames;
-resp_idx = find(t >= resp_win(1) & t <= resp_win(2));
-
-assert(~isempty(base_idx), 'Baseline window too short.');
-assert(~isempty(resp_idx), 'resp_win yields no frames.');
+frame_idx   = frame_idx(valid);
+channels    = channels(valid);
+currents    = currents(valid);
+trial_index = trial_index(valid);
 
 %% -------------------------
-% Load & sort TIFF files
+% RESULTS STRUCT
 % -------------------------
-image_files = wf_sort_tiffs(img_dir);
+unique_channels = unique(channels);
 
-max_onset = max(trial_onset_frame_idx(isfinite(trial_onset_frame_idx)));
-max_needed = min(max_onset + postFrames, numel(image_files));
-if max_needed < numel(image_files)
-    fprintf('Trimming TIFF list: using %d / %d frames\n', max_needed, numel(image_files));
-end
-image_files = image_files(1:max_needed);
+results = struct( ...
+    'channel', {}, ...
+    'threshold_uA', {}, ...
+    'anchor_current_uA', {}, ...
+    'azi', {}, ...
+    'alt', {}, ...
+    'peak_xy', {}, ...
+    'current_summary', {}, ...
+    'anchor_mean_map', {} );
+% ----- compute once near the top of the script, same as montage script -----
+pad_xy = 10;
 
-img1 = wf_read_tiff_frame(img_dir, image_files, 1, crop_rect);
-[H,W] = size(img1);
-assert(all(size(final_mask)==[H W]), 'final_mask size mismatch TIFF size.');
-assert(all(size(analysis_mask)==[H W]), 'analysis_mask size mismatch TIFF size.');
-if USE_RETINO
-    assert(all(size(azi_stim)==[H W]), 'azi_stim size mismatch TIFF size.');
-    assert(all(size(alt_stim)==[H W]), 'alt_stim size mismatch TIFF size.');
-end
+[y_v1, x_v1] = find(V1_mask);
 
-[XX,YY] = meshgrid(1:W, 1:H);
+ymin_v1 = min(y_v1);
+ymax_v1 = max(y_v1);
+xmin_v1 = min(x_v1);
+xmax_v1 = max(x_v1);
 
+ymin_v1 = max(1, ymin_v1 - pad_xy);
+ymax_v1 = min(size(V1_mask,1), ymax_v1 + pad_xy);
+xmin_v1 = max(1, xmin_v1 - pad_xy);
+xmax_v1 = min(size(V1_mask,2), xmax_v1 + pad_xy);
+
+global_v1_xlim = [xmin_v1 xmax_v1];
+global_v1_ylim = [ymin_v1 ymax_v1];
+global_min_v1 = inf;
+global_max_v1 = -inf;
 %% -------------------------
-% Parse CSV mapping
+% PASS 1: MAIN LOOP + STORE ANCHOR MAPS
 % -------------------------
-vars = lower(string(Tcsv.Properties.VariableNames));
-col_trial = find(vars=="trial_index" | vars=="trial" | vars=="trial_idx", 1);
-col_chan  = find(vars=="stim_chan" | vars=="channel" | vars=="stim_channel" | vars=="stimchan", 1);
-col_curr  = find(vars=="current_ua" | vars=="current" | vars=="currentlevel" | vars=="current_level", 1);
+for ch_i = 1:numel(unique_channels)
 
-assert(~isempty(col_trial), 'CSV must contain trial_index column.');
-assert(~isempty(col_chan),  'CSV must contain stim_chan column.');
-assert(~isempty(col_curr),  'CSV must contain current_uA column.');
+    ch = unique_channels(ch_i);
+    fprintf('\nChannel %d\n', ch);
 
-trial_index_csv = double(Tcsv{:, col_trial});
-stim_chan_csv   = double(Tcsv{:, col_chan});
-current_uA_csv  = double(Tcsv{:, col_curr});
+    idx_ch = channels == ch;
+    currents_ch = unique(currents(idx_ch));
+    currents_ch = sort(currents_ch);
 
-keep = isfinite(trial_index_csv) & isfinite(stim_chan_csv) & isfinite(current_uA_csv);
-trial_index_csv = trial_index_csv(keep);
-stim_chan_csv   = stim_chan_csv(keep);
-current_uA_csv  = current_uA_csv(keep);
-
-trial_stim_chan   = nan(Ntr,1);
-trial_current_uA  = nan(Ntr,1);
-
-if all(ismember(1:Ntr, trial_index_csv))
-    [~, ia] = unique(trial_index_csv, 'stable');
-    ti = trial_index_csv(ia);
-    ch = stim_chan_csv(ia);
-    cu = current_uA_csv(ia);
-    trial_stim_chan(ti)  = ch;
-    trial_current_uA(ti) = cu;
-    fprintf('Mapped CSV by trial_index.\n');
-else
-    M = min(numel(stim_chan_csv), Ntr);
-    trial_stim_chan(1:M)  = stim_chan_csv(1:M);
-    trial_current_uA(1:M) = current_uA_csv(1:M);
-    warning('Mapped CSV by row order for first %d trials.', M);
-end
-
-ch_list = unique(trial_stim_chan(isfinite(trial_stim_chan)));
-ch_list = sort(ch_list(:));
-fprintf('Found %d channels.\n', numel(ch_list));
-
-%% -------------------------
-% Run fixed ROI per channel
-% -------------------------
-master = struct();
-master.meta.base_out_mat = fullfile(fp, fn);
-master.meta.csv_file = csv_file;
-master.meta.roi_radius_px = roi_radius_px;
-master.meta.polarity = polarity;
-master.meta.response_metric = response_metric;
-master.meta.resp_win = resp_win;
-master.meta.before_time = before_s;
-master.meta.after_time  = after_s;
-master.meta.Freq = Freq;
-master.meta.threshold_rule = ternary(use_ci_rule,'CI_low>0','p<alpha');
-master.meta.alpha = alpha;
-master.meta.use_retino = USE_RETINO;
-master.meta.vf_threshold_frac = VF_THRESHOLD_FRAC;
-master.meta.map_threshold_frac = MAP_THRESHOLD_FRAC;
-master.meta.use_percent_dff = USE_PERCENT_DFF;
-master.meta.dff_clim = DFF_CLIM;
-
-chan_res = cell(numel(ch_list), 1);
-
-roi_overlay = struct();
-roi_overlay.ch   = [];
-roi_overlay.mask = {};
-roi_overlay.center_xy = [];
-roi_overlay.anchor_current = [];
-
-for c = 1:numel(ch_list)
-    CH = ch_list(c);
-
-    sel = (trial_stim_chan == CH) & isfinite(trial_current_uA) & isfinite(trial_onset_frame_idx);
-    trial_idx_sel = find(sel);
-    curr_sel = trial_current_uA(sel);
-
-    if isempty(trial_idx_sel)
+    if ~any(currents_ch == 0)
+        fprintf('  Skipping channel %d (no 0 uA baseline)\n', ch);
         continue;
     end
 
-    uCurr = unique(curr_sel);
-    uCurr = sort(uCurr(:));
-    if ~any(uCurr==0)
-        fprintf('[%d/%d] ch%03d skipped (no 0 uA)\n', c, numel(ch_list), CH);
+    % baseline stack still computed because t-tests compare condition trials
+    % against 0 uA trials, but maps are not baseline-subtracted again
+    idx_base = idx_ch & currents == 0;
+    dff_base = build_trial_stack(frame_idx(idx_base), img_dir, image_files, ...
+        full_win, baseline_idx, response_idx, H, W);
+
+    if isempty(dff_base)
+        fprintf('  Skipping channel %d (baseline trial stack empty)\n', ch);
         continue;
     end
 
-    % anchor current
-    if strcmpi(ANCHOR_RULE,'max_current')
-        anchor_current = max(uCurr);
+    current_summary = struct( ...
+        'current_uA', {}, ...
+        'n_trials', {}, ...
+        'has_cluster', {}, ...
+        'largest_cluster_size', {}, ...
+        'fraction_V1_activated', {}, ...
+        'mean_cluster_effect', {}, ...
+        'sig_cluster_mask', {}, ...
+        'mean_evoked_map', {} );
+
+    threshold_uA = nan;
+
+    nonzero_currents = currents_ch(currents_ch > 0);
+    if isempty(nonzero_currents)
+        anchor_current = 0;
     else
-        anchor_current = ANCHOR_CURRENT_VALUE;
-        if ~ismember(anchor_current, uCurr)
-            fprintf('[%d/%d] ch%03d skipped (anchor %.4g not present)\n', c, numel(ch_list), CH, anchor_current);
+        anchor_current = max(nonzero_currents);
+    end
+    anchor_mean_map = [];
+
+    for cur_i = 1:numel(currents_ch)
+
+        cur = currents_ch(cur_i);
+        if cur == 0
             continue;
         end
-    end
 
-    %% --------- BUILD ANCHOR MEAN MAP ----------
-    idx_anchor_trials = trial_idx_sel(curr_sel == anchor_current);
-    onset_anchor = trial_onset_frame_idx(idx_anchor_trials);
+        idx_cur = idx_ch & currents == cur;
+        dff_cur = build_trial_stack(frame_idx(idx_cur), img_dir, image_files, ...
+            full_win, baseline_idx, response_idx, H, W);
+        % ----- collect global min/max over ALL trials in V1 -----
+        for t = 1:size(dff_cur,3)
+            frame = dff_cur(:,:,t);
+            vals = frame(V1_mask);
+        
+            if isempty(vals)
+                continue;
+            end
+        
+            global_min_v1 = min(global_min_v1, min(vals, [], 'omitnan'));
+            global_max_v1 = max(global_max_v1, max(vals, [], 'omitnan'));
+        end
 
-    mean_map_anchor = wf_mean_evoked_map( ...
-        onset_anchor, img_dir, image_files, crop_rect, ...
-        preFrames, postFrames, base_idx, resp_idx, analysis_mask);
+        if isempty(dff_cur)
+            fprintf('  %g uA -> no valid trials\n', cur);
+            continue;
+        end
 
-    %% --------- plot explicit dF/F mean evoked map at 7 uA ----------
-    if SAVE_7UA_MAPS && any(abs(uCurr - TARGET_MAP_CURRENT) < 1e-9)
+        % SAME map as montage script
+        mean_evoked_map = mean(dff_cur, 3, 'omitnan');
 
-        idx_7ua_trials = trial_idx_sel(abs(curr_sel - TARGET_MAP_CURRENT) < 1e-9);
-        onset_7ua = trial_onset_frame_idx(idx_7ua_trials);
+        if cur == anchor_current
+            anchor_mean_map = mean_evoked_map;
+        end
 
-        if ~isempty(onset_7ua)
+        % Use raw mean evoked map as effect map too
+        effect_map = mean_evoked_map;
 
-            mean_map_7ua = mean_trial_dff_map( ...
-                onset_7ua, img_dir, image_files, crop_rect, ...
-                preFrames, postFrames, base_idx, resp_idx, analysis_mask, USE_PERCENT_DFF);
+        % Pixelwise significance inside analysis mask
+        p_map = nan(H,W);
 
-            mean_map_7ua_plot = mean_map_7ua;
-            mean_map_7ua_plot(~analysis_mask) = NaN;
+        if use_analysis_mask_for_stats
+            pix_idx = find(analysis_mask);
+        else
+            pix_idx = find(final_mask);
+        end
 
-            fig7 = figure('Visible','off','Color','w');
-            imagesc(mean_map_7ua_plot);
-            axis image off;
-            colormap parula;
-            cb = colorbar;
-            if USE_FIXED_DFF_CLIM
-                clim(DFF_CLIM);
+        dff_cur_2d  = reshape(dff_cur,  [], size(dff_cur,3));
+        dff_base_2d = reshape(dff_base, [], size(dff_base,3));
+
+        for k = 1:numel(pix_idx)
+            pix = pix_idx(k);
+
+            x = dff_cur_2d(pix, :);
+            b = dff_base_2d(pix, :);
+
+            x = x(isfinite(x));
+            b = b(isfinite(b));
+
+            if numel(x) < 3 || numel(b) < 3
+                continue;
             end
 
-            if USE_PERCENT_DFF
-                cb.Label.String = '\DeltaF/F (%)';
-            else
-                cb.Label.String = '\DeltaF/F';
-            end
-
-            title(sprintf('ch%03d | mean evoked dF/F map at %.1f \\muA', CH, TARGET_MAP_CURRENT), ...
-                'Interpreter','tex');
-            hold on;
-
-            % activation region from dF/F map
-            Wtmp = double(mean_map_7ua);
-            if strcmpi(polarity,'neg')
-                Wtmp = -Wtmp;
-            end
-            Wtmp(~analysis_mask) = NaN;
-
-            peak_tmp = max(Wtmp(:), [], 'omitnan');
-            if isfinite(peak_tmp) && peak_tmp > 0
-                act_mask_7ua = (Wtmp >= MAP_THRESHOLD_FRAC * peak_tmp) & analysis_mask;
-                if nnz(act_mask_7ua) > 0
-                    contour(act_mask_7ua, [0.5 0.5], 'w', 'LineWidth', 1.2);
-                end
-            end
-
-            % peak location on the dF/F map
-            tmp7 = mean_map_7ua;
-            tmp7(~analysis_mask) = NaN;
-            switch polarity
-                case 'pos', [~, lin7] = max(tmp7(:));
-                case 'neg', [~, lin7] = min(tmp7(:));
-            end
-            [ay7, ax7] = ind2sub([H W], lin7);
-            builtin('plot', ax7, ay7, 'wo', 'MarkerFaceColor','k', 'MarkerSize', 6);
-
-            exportgraphics(fig7, ...
-                fullfile(out_dir, sprintf('ch%03d_mean_evoked_dff_map_%guA.png', CH, TARGET_MAP_CURRENT)), ...
-                'Resolution', 220);
-            close(fig7);
-        end
-    end
-
-    %% Peak inside analysis mask
-    tmpA = mean_map_anchor;
-    tmpA(~analysis_mask) = NaN;
-
-    switch polarity
-        case 'pos', [~, linA] = max(tmpA(:));
-        case 'neg', [~, linA] = min(tmpA(:));
-        otherwise, error('polarity must be pos/neg');
-    end
-    [ay, ax] = ind2sub([H W], linA);
-    anchor_center = [ax ay];
-
-    roi_mask = ((XX - ax).^2 + (YY - ay).^2) <= roi_radius_px^2;
-    roi_mask = roi_mask & analysis_mask;
-
-    roi_overlay.ch(end+1,1) = CH;
-    roi_overlay.mask{end+1,1} = roi_mask;
-    roi_overlay.center_xy(end+1,:) = [ax ay];
-    roi_overlay.anchor_current(end+1,1) = anchor_current;
-
-    if nnz(roi_mask)==0
-        fprintf('[%d/%d] ch%03d skipped (anchor ROI empty)\n', c, numel(ch_list), CH);
-        continue;
-    end
-
-    %% --------- visual field mapping ----------
-    anchor_azi = NaN;
-    anchor_alt = NaN;
-    roi_azi_mean = NaN;
-    roi_alt_mean = NaN;
-    roi_azi_weighted = NaN;
-    roi_alt_weighted = NaN;
-    activation_azi_weighted = NaN;
-    activation_alt_weighted = NaN;
-    activation_area_px = NaN;
-
-    if USE_RETINO
-        anchor_azi = azi_stim(ay, ax);
-        anchor_alt = alt_stim(ay, ax);
-
-        roi_azi_vals = azi_stim(roi_mask);
-        roi_alt_vals = alt_stim(roi_mask);
-
-        roi_azi_mean = mean(roi_azi_vals, 'omitnan');
-        roi_alt_mean = mean(roi_alt_vals, 'omitnan');
-
-        % weighted centroid within ROI
-        Wroi = double(mean_map_anchor);
-        if strcmpi(polarity,'neg')
-            Wroi = -Wroi;
-        end
-        Wroi(~roi_mask) = NaN;
-
-        w = Wroi(roi_mask);
-        keepw = isfinite(w) & isfinite(roi_azi_vals) & isfinite(roi_alt_vals) & (w > 0);
-        if any(keepw)
-            w2 = w(keepw);
-            a2 = roi_azi_vals(keepw);
-            b2 = roi_alt_vals(keepw);
-            roi_azi_weighted = sum(a2 .* w2) / sum(w2);
-            roi_alt_weighted = sum(b2 .* w2) / sum(w2);
+            [~, p] = ttest2(x, b);
+            p_map(pix) = p;
         end
 
-        % weighted centroid over suprathreshold activation region
-        Wact = double(mean_map_anchor);
-        if strcmpi(polarity,'neg')
-            Wact = -Wact;
+        if use_analysis_mask_for_stats
+            sig_pixels = (p_map < alpha) & (effect_map > 0) & analysis_mask;
+            denom_mask = analysis_mask;
+        else
+            sig_pixels = (p_map < alpha) & (effect_map > 0) & final_mask;
+            denom_mask = final_mask;
         end
-        Wact(~analysis_mask) = NaN;
 
-        peak_val = max(Wact(:), [], 'omitnan');
-        if isfinite(peak_val) && peak_val > 0
-            act_mask = Wact >= VF_THRESHOLD_FRAC * peak_val;
-            act_mask = act_mask & analysis_mask;
-            activation_area_px = nnz(act_mask);
+        % Cluster filtering
+        CC = bwconncomp(sig_pixels, conn);
+        sig_cluster_mask = false(H,W);
 
-            if activation_area_px > 0
-                act_azi = azi_stim(act_mask);
-                act_alt = alt_stim(act_mask);
-                act_w   = Wact(act_mask);
+        cluster_sizes = zeros(CC.NumObjects,1);
+        cluster_effects = nan(CC.NumObjects,1);
 
-                keepa = isfinite(act_azi) & isfinite(act_alt) & isfinite(act_w) & (act_w > 0);
-                if any(keepa)
-                    act_azi = act_azi(keepa);
-                    act_alt = act_alt(keepa);
-                    act_w   = act_w(keepa);
+        for c_i = 1:CC.NumObjects
+            pix_list = CC.PixelIdxList{c_i};
+            cluster_sizes(c_i) = numel(pix_list);
+            cluster_effects(c_i) = mean(effect_map(pix_list), 'omitnan');
 
-                    activation_azi_weighted = sum(act_azi .* act_w) / sum(act_w);
-                    activation_alt_weighted = sum(act_alt .* act_w) / sum(act_w);
-                end
+            if numel(pix_list) >= min_cluster_size
+                sig_cluster_mask(pix_list) = true;
             end
         end
-    end
 
-    %% --------- PER CURRENT: fixed ROI scalar ----------
-    nC = numel(uCurr);
-    trial_scalar = cell(nC,1);
-    m = nan(nC,1);
-    sdev = nan(nC,1);
-    ntr = zeros(nC,1);
+        has_cluster = any(sig_cluster_mask(:));
 
-    for i = 1:nC
-        cu = uCurr(i);
-        idx_curr_trials = trial_idx_sel(curr_sel == cu);
-        ntr(i) = numel(idx_curr_trials);
-        if ntr(i) < 1, continue; end
-
-        scal = nan(ntr(i),1);
-
-        for k = 1:ntr(i)
-            tr = idx_curr_trials(k);
-            f0 = double(trial_onset_frame_idx(tr));
-
-            dff_t = trial_roi_dff( ...
-                f0, roi_mask, img_dir, image_files, crop_rect, ...
-                preFrames, postFrames, L, base_idx);
-
-            x = dff_t(resp_idx);
-            scal(k) = summarize_resp(x, response_metric, polarity);
+        if isempty(cluster_sizes)
+            largest_cluster_size = 0;
+        else
+            largest_cluster_size = max(cluster_sizes);
         end
 
-        trial_scalar{i} = scal;
-        m(i) = mean(scal, 'omitnan');
-        sdev(i) = std(scal, 0, 'omitnan');
-    end
-
-    %% significance vs 0
-    [sig, p_vs0, ci_diff, thresh_uA] = sig_vs0(uCurr, trial_scalar, alpha, use_ci_rule, z);
-
-    %% plot current threshold curve
-    if SAVE_PER_CHANNEL_FIGS
-        fig = figure('Visible','off','Color','w'); hold on;
-
-        [x_all, y_all, x_jit] = make_scatter(uCurr, trial_scalar);
-        builtin('plot', x_jit, y_all, '.', 'MarkerSize', 10, 'DisplayName','Trials');
-
-        errorbar(uCurr, m, sdev, 'o-', 'LineWidth', 1.6, 'MarkerSize', 5, ...
-            'DisplayName','Mean±std');
-
-        xlabel('Current (\muA)');
-        ylabel(sprintf('ROI scalar (%s)', response_metric));
-        title(sprintf('ch%03d | FIXED ROI r=%gpx | anchor=%.4g | rule=%s', ...
-            CH, roi_radius_px, anchor_current, ternary(use_ci_rule,'CI_low>0','p<alpha')), ...
-            'Interpreter','none');
-        grid on;
-
-        yl = ylim;
-        if isfinite(thresh_uA)
-            builtin('plot', [thresh_uA thresh_uA], yl, 'k--', 'LineWidth', 1.2, ...
-                'DisplayName', sprintf('Threshold=%.4g uA', thresh_uA));
+        fraction_activated = sum(sig_cluster_mask(:)) / sum(denom_mask(:));
+        mean_cluster_effect = mean(effect_map(sig_cluster_mask), 'omitnan');
+        if ~has_cluster
+            mean_cluster_effect = NaN;
         end
-        ylim(yl);
 
-        legend('Location','bestoutside');
-        hold off;
+        fprintf('  %g uA -> cluster: %d | largest_cluster=%d | frac=%.4f\n', ...
+            cur, has_cluster, largest_cluster_size, fraction_activated);
 
-        exportgraphics(fig, fullfile(out_dir, sprintf('ch%03d_fixed_threshold.png', CH)), 'Resolution', 220);
-        close(fig);
-    end
+        current_summary(end+1).current_uA = cur;
+        current_summary(end).n_trials = size(dff_cur,3);
+        current_summary(end).has_cluster = has_cluster;
+        current_summary(end).largest_cluster_size = largest_cluster_size;
+        current_summary(end).fraction_V1_activated = fraction_activated;
+        current_summary(end).mean_cluster_effect = mean_cluster_effect;
+        current_summary(end).sig_cluster_mask = sig_cluster_mask;
+        current_summary(end).mean_evoked_map = mean_evoked_map;
 
-    %% optional visual field blob plot for anchor current
-    if USE_RETINO && SAVE_PER_CHANNEL_FIGS && isfinite(activation_azi_weighted)
-        Wact = double(mean_map_anchor);
-        if strcmpi(polarity,'neg')
-            Wact = -Wact;
+        if isnan(threshold_uA) && has_cluster
+            threshold_uA = cur;
         end
-        Wact(~analysis_mask) = NaN;
-        peak_val = max(Wact(:), [], 'omitnan');
-        act_mask = (Wact >= VF_THRESHOLD_FRAC * peak_val) & analysis_mask;
-
-        figvf = figure('Visible','off','Color','w');
-        scatter(azi_stim(act_mask), alt_stim(act_mask), 20, Wact(act_mask), 'filled');
-        hold on;
-        builtin('plot', anchor_azi, anchor_alt, 'ko', 'MarkerFaceColor','w', 'MarkerSize',8);
-        builtin('plot', activation_azi_weighted, activation_alt_weighted, 'r+', 'MarkerSize',12, 'LineWidth',1.5);
-        xlabel('Azimuth (deg)');
-        ylabel('Altitude (deg)');
-        title(sprintf('ch%03d | visual field projection | anchor %.4g uA', CH, anchor_current));
-        axis equal; grid on; colorbar;
-        exportgraphics(figvf, fullfile(out_dir, sprintf('ch%03d_visual_field_projection.png', CH)), 'Resolution', 220);
-        close(figvf);
     end
 
-    %% save per-channel mat
-    cres = struct();
-    cres.chan = CH;
-    cres.uCurr = uCurr;
-    cres.ntr = ntr;
-    cres.anchor_current = anchor_current;
-    cres.roi_center_xy = anchor_center;
+    if isempty(anchor_mean_map)
+        if ~isempty(dff_base)
+            anchor_mean_map = mean(dff_base, 3, 'omitnan');
+        else
+            anchor_mean_map = nan(H,W);
+        end
+    end
 
-    cres.fixed.trial_scalar = trial_scalar;
-    cres.fixed.mean = m;
-    cres.fixed.std  = sdev;
-    cres.fixed.sig  = sig;
-    cres.fixed.p_vs0 = p_vs0;
-    cres.fixed.ci_diff = ci_diff;
-    cres.fixed.threshold_uA = thresh_uA;
+    % display masking option
+    if mask_outside_for_display
+        anchor_mean_map(~final_mask) = nan;
+    end
 
-    cres.retino = struct();
-    cres.retino.anchor_pixel_xy = anchor_center;
-    cres.retino.anchor_azi_deg = anchor_azi;
-    cres.retino.anchor_alt_deg = anchor_alt;
-    cres.retino.roi_azi_mean_deg = roi_azi_mean;
-    cres.retino.roi_alt_mean_deg = roi_alt_mean;
-    cres.retino.roi_azi_weighted_deg = roi_azi_weighted;
-    cres.retino.roi_alt_weighted_deg = roi_alt_weighted;
-    cres.retino.activation_azi_weighted_deg = activation_azi_weighted;
-    cres.retino.activation_alt_weighted_deg = activation_alt_weighted;
-    cres.retino.activation_area_px = activation_area_px;
-    cres.retino.vf_threshold_frac = VF_THRESHOLD_FRAC;
+    % peak search inside analysis mask
+    search_map = anchor_mean_map;
+    search_map(~analysis_mask) = nan;
 
-    save(fullfile(out_dir, sprintf('ch%03d_fixed_results.mat', CH)), 'cres', '-v7.3');
+    if all(isnan(search_map(:)))
+        x_peak = NaN;
+        y_peak = NaN;
+        azi_val = NaN;
+        alt_val = NaN;
+    else
+        [~, idx_max] = max(search_map(:));
+        [y_peak, x_peak] = ind2sub(size(search_map), idx_max);
+        azi_val = azi_stim(y_peak, x_peak);
+        alt_val = alt_stim(y_peak, x_peak);
+    end
 
-    chan_res{c} = cres;
-
-    fprintf('[%d/%d] ch%03d done | thresh=%s | VF=(%.2f, %.2f)\n', ...
-        c, numel(ch_list), CH, ternary(isfinite(thresh_uA), sprintf('%.4g', thresh_uA), 'NaN'), ...
-        activation_azi_weighted, activation_alt_weighted);
+    results(end+1).channel = ch;
+    results(end).threshold_uA = threshold_uA;
+    results(end).anchor_current_uA = anchor_current;
+    results(end).azi = azi_val;
+    results(end).alt = alt_val;
+    results(end).peak_xy = [x_peak, y_peak];
+    results(end).current_summary = current_summary;
+    results(end).anchor_mean_map = anchor_mean_map;
 end
+fprintf('\nGLOBAL V1 VALUE RANGE (all trials):\n');
+fprintf('  min = %.5f\n', global_min_v1);
+fprintf('  max = %.5f\n', global_max_v1);
+%% -------------------------
+% COMPUTE SHARED CLIM IF REQUESTED
+% -------------------------
+if use_shared_clim
+    if isempty(shared_clim)
+        all_vals = [];
 
-master.chan_res = chan_res;
+        for i = 1:numel(results)
+            M = results(i).anchor_mean_map;
+            if isempty(M)
+                continue;
+            end
 
-if SAVE_MASTER_SUMMARY
-    save(fullfile(out_dir, 'MASTER_fixed_all_channels.mat'), 'master', '-v7.3');
+            if mask_outside_for_display
+                vals = M(final_mask & isfinite(M));
+            else
+                vals = M(isfinite(M));
+            end
+
+            all_vals = [all_vals; vals(:)];
+        end
+
+        if isempty(all_vals)
+            clim_to_use = [];
+        else
+            clim_to_use = [min(all_vals), max(all_vals)];
+        end
+    else
+        clim_to_use = shared_clim;
+    end
+else
+    clim_to_use = [];
 end
 
 %% -------------------------
-% Summary visual field plot
+% PASS 2: PLOT PER-CHANNEL SUMMARY
 % -------------------------
-if USE_RETINO && SAVE_VISUAL_FIELD_FIG
-    figVF = figure('Visible','off','Color','w'); hold on;
+for i = 1:numel(results)
 
-    for c = 1:numel(chan_res)
-        if isempty(chan_res{c}), continue; end
-        cres = chan_res{c};
+    ch = results(i).channel;
+    anchor_current = results(i).anchor_current_uA;
+    anchor_mean_map = results(i).anchor_mean_map;
+    current_summary = results(i).current_summary;
+    x_peak = results(i).peak_xy(1);
+    y_peak = results(i).peak_xy(2);
+    threshold_uA = results(i).threshold_uA;
 
-        x = cres.retino.activation_azi_weighted_deg;
-        y = cres.retino.activation_alt_weighted_deg;
+    fig_ch = figure('Color','w', 'Name', sprintf('Channel %d summary', ch));
 
-        if isfinite(x) && isfinite(y)
-            scatter(x, y, 100, cres.fixed.threshold_uA, 'filled');
-            text(x, y, sprintf(' ch%d', cres.chan), 'FontSize', 8);
-        end
-    end
-
-    xlabel('Azimuth (deg)');
-    ylabel('Altitude (deg)');
-    title('Visual field locations of LGN stimulation channels');
-    axis equal; grid on; colorbar;
-    colormap jet;
-
-    exportgraphics(figVF, fullfile(out_dir, 'visual_field_locations_by_channel.png'), 'Resolution', 220);
-    close(figVF);
-end
-
-fprintf('\nDONE.\nSaved to: %s\n', out_dir);
-
-%% ===================== LOCAL FUNCTIONS =====================
-
-function y = summarize_resp(x, response_metric, polarity)
-    switch response_metric
-        case 'mean_respwin'
-            y = mean(x, 'omitnan');
-        case 'peak_respwin'
-            if strcmpi(polarity,'pos')
-                y = max(x);
-            else
-                y = min(x);
-            end
-        otherwise
-            error('Unknown response_metric: %s', response_metric);
-    end
-end
-
-function [sig, p_vs0, ci_diff, thresh_uA] = sig_vs0(uCurr, trial_scalar, alpha, use_ci_rule, z)
-    nC = numel(uCurr);
-    sig = false(nC,1);
-    p_vs0 = nan(nC,1);
-    ci_diff = nan(nC,2);
-
-    i0 = find(uCurr==0, 1);
-    y0 = trial_scalar{i0};
-    y0 = y0(isfinite(y0));
-    if numel(y0) < 2
-        thresh_uA = NaN;
-        return;
-    end
-
-    for i = 1:nC
-        if uCurr(i)==0, continue; end
-        y = trial_scalar{i};
-        y = y(isfinite(y));
-        if numel(y) < 2, continue; end
-
-        [~, p] = ttest2(y, y0, 'Vartype','unequal', 'Alpha', alpha);
-        p_vs0(i) = p;
-
-        m1 = mean(y);  s1 = std(y);  n1 = numel(y);
-        m2 = mean(y0); s2 = std(y0); n2 = numel(y0);
-
-        d = m1 - m2;
-        se = sqrt((s1^2)/n1 + (s2^2)/n2);
-        ci = [d - z*se, d + z*se];
-        ci_diff(i,:) = ci;
-
-        if use_ci_rule
-            sig(i) = (ci(1) > 0);
+    subplot(1,2,1);
+    ax_map = gca;
+    
+    % IMPORTANT:
+    % anchor_mean_map must be assigned from:
+    % anchor_mean_map = mean(dff_cur, 3, 'omitnan');
+    % for the anchor current, with NO extra subtraction and NO masking for display
+    
+    imagesc(ax_map, anchor_mean_map);
+    axis(ax_map, 'image');
+    axis(ax_map, 'off');
+    set(ax_map, 'YDir', 'normal');
+    
+    % same crop as montage script
+    xlim(ax_map, global_v1_xlim);
+    ylim(ax_map, global_v1_ylim);
+    
+    % same colormap / CLim
+    colormap(ax_map, parula);
+    if use_shared_clim && ~isempty(clim_to_use)
+        caxis(ax_map, clim_to_use);
+    elseif ~use_shared_clim
+        % optional per-plot autoscale that matches montage logic
+        vals = anchor_mean_map(:);
+        vals = vals(isfinite(vals));
+        if isempty(vals)
+            clim_local = [-0.01 0.01];
         else
-            sig(i) = (p < alpha);
+            q = quantile(vals, [0.02 0.98]);
+            m = max(abs(q));
+            if m == 0 || ~isfinite(m)
+                m = 0.01;
+            end
+            clim_local = [-m m];
         end
+        caxis(ax_map, clim_local);
+    end
+    
+    hold(ax_map, 'on');
+    
+    % same overlays as montage script
+    visboundaries(ax_map, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
+    visboundaries(ax_map, final_mask, 'Color', 'y', 'LineWidth', 1.0);
+    
+    % same peak marker if you want it
+    if ~isnan(x_peak)
+        plot(ax_map, x_peak, y_peak, 'wo', 'MarkerSize', 8, 'LineWidth', 2);
+    end
+    
+    title(ax_map, sprintf('Mean map\nCh %d | %g uA', ch, anchor_current), ...
+        'Interpreter', 'none');
+    
+    cb = colorbar(ax_map, 'eastoutside');
+    cb.Label.String = '\DeltaF/F';
+    if use_shared_clim && ~isempty(clim_to_use)
+        cb.Limits = clim_to_use;
     end
 
-    thresh_uA = NaN;
-    cand = uCurr(sig);
-    if ~isempty(cand), thresh_uA = min(cand); end
+    subplot(1,2,2);
+    cur_vals = [current_summary.current_uA];
+    cluster_vals = double([current_summary.has_cluster]);
+    largest_vals = [current_summary.largest_cluster_size];
+
+    yyaxis left;
+    plot(cur_vals, cluster_vals, '-o', 'LineWidth', 1.5);
+    ylabel('Has cluster');
+    ylim([-0.05 1.05]);
+
+    yyaxis right;
+    plot(cur_vals, largest_vals, '-s', 'LineWidth', 1.5);
+    ylabel('Largest cluster size');
+
+    xlabel('Current (uA)');
+    title(sprintf('Threshold = %g uA', threshold_uA));
+    grid on;
+
+    drawnow;
 end
 
-function [x_all, y_all, x_jit] = make_scatter(uCurr, trial_scalar)
-    x_all = [];
-    y_all = [];
-    for i = 1:numel(uCurr)
-        y = trial_scalar{i};
-        if isempty(y), continue; end
-        y = y(:);
-        x = uCurr(i) * ones(size(y));
-        x_all = [x_all; x]; %#ok<AGROW>
-        y_all = [y_all; y]; %#ok<AGROW>
-    end
-    keep = isfinite(y_all) & isfinite(x_all);
-    x_all = x_all(keep);
-    y_all = y_all(keep);
-    jit = 0.06;
-    x_jit = x_all + (rand(size(x_all)) - 0.5) * 2 * jit;
+%% -------------------------
+% SUMMARY SCATTER PLOT
+% -------------------------
+if isempty(results)
+    warning('No channel results were generated.');
+else
+    azi_vals = [results.azi];
+    alt_vals = [results.alt];
+    thr_vals = [results.threshold_uA];
+
+    fig_sum = figure('Color','w');
+    scatter(azi_vals, alt_vals, 80, thr_vals, 'filled');
+    colorbar;
+    xlabel('Azimuth');
+    ylabel('Altitude');
+    title('Channel thresholds in visual space');
+    grid on;
 end
 
-function dff_t = trial_roi_dff( ...
-    f0, roi_mask, img_dir, image_files, crop_rect, ...
-    preFrames, postFrames, L, base_idx)
-
-    f0 = double(f0);
-    f_start = f0 - preFrames;
-    f_end   = f0 + postFrames;
-
-    if f_start < 1 || f_end > numel(image_files)
-        error('Trial frames out of bounds: f_start=%d, f_end=%d, nFiles=%d', ...
-              f_start, f_end, numel(image_files));
-    end
-
-    roi_mask = logical(roi_mask);
-    if nnz(roi_mask) == 0, error('ROI mask is empty.'); end
-
-    raw = nan(L,1,'single');
-
-    kk = 0;
-    for f = f_start:f_end
-        kk = kk + 1;
-        img = imread(fullfile(img_dir, image_files(f).name));
-        if ~isempty(crop_rect), img = imcrop(img, crop_rect); end
-        img = single(img);
-        raw(kk) = mean(img(roi_mask), 'omitnan');
-    end
-
-    F0 = mean(raw(base_idx), 'omitnan');
-    dff_t = (raw - F0) ./ F0;
-    dff_t = double(dff_t);
+%% -------------------------
+% SAVE
+% -------------------------
+save_dir = fullfile(img_dir, '..', 'analysis');
+if ~exist(save_dir, 'dir')
+    mkdir(save_dir);
 end
 
-function out = ternary(cond, a, b)
-    if cond, out = a; else, out = b; end
+save_file = fullfile(save_dir, 'current_thresholding_V1_cluster_results_sharedclim_option.mat');
+save(save_file, 'results', 'alpha', 'min_cluster_size', 'conn', ...
+    'pre_sec', 'post_sec', 'Fs', 'response_sec', ...
+    'analysis_mask', 'V1_mask', 'final_mask', ...
+    'use_shared_clim', 'shared_clim', 'clim_to_use', ...
+    'mask_outside_for_display', 'use_analysis_mask_for_stats', '-v7.3');
+
+fprintf('\nSaved results to:\n  %s\n', save_file);
+
+%% =========================
+% LOCAL FUNCTION
+% =========================
+function dff_trials = build_trial_stack(frame_idx, img_dir, image_files, full_win, baseline_idx, response_idx, H, W)
+
+n = numel(frame_idx);
+if n == 0
+    dff_trials = [];
+    return;
 end
 
-function mean_map = mean_trial_dff_map( ...
-    onset_list, img_dir, image_files, crop_rect, ...
-    preFrames, postFrames, base_idx, resp_idx, analysis_mask, use_percent_dff)
+dff_trials = nan(H,W,n);
 
-    nTrials = numel(onset_list);
-    assert(nTrials > 0, 'No trials provided.');
+for i = 1:n
+    f = frame_idx(i);
+    frames = f + full_win;
 
-    L = preFrames + postFrames + 1;
+    stack = zeros(H,W,numel(frames));
 
-    img0 = imread(fullfile(img_dir, image_files(1).name));
-    if ~isempty(crop_rect), img0 = imcrop(img0, crop_rect); end
-    img0 = single(img0);
-
-    [H,W] = size(img0);
-    trial_maps = nan(H, W, nTrials, 'single');
-
-    for k = 1:nTrials
-        f0 = double(onset_list(k));
-        f_start = f0 - preFrames;
-        f_end   = f0 + postFrames;
-
-        if f_start < 1 || f_end > numel(image_files)
-            continue
-        end
-
-        stack = nan(H, W, L, 'single');
-        kk = 0;
-        for f = f_start:f_end
-            kk = kk + 1;
-            img = imread(fullfile(img_dir, image_files(f).name));
-            if ~isempty(crop_rect), img = imcrop(img, crop_rect); end
-            stack(:,:,kk) = single(img);
-        end
-
-        F0 = mean(stack(:,:,base_idx), 3, 'omitnan');
-        Resp = mean(stack(:,:,resp_idx), 3, 'omitnan');
-
-        dff_map = (Resp - F0) ./ F0;
-        if use_percent_dff
-            dff_map = 100 * dff_map;
-        end
-
-        dff_map(~analysis_mask) = NaN;
-        trial_maps(:,:,k) = dff_map;
+    for k = 1:numel(frames)
+        img = imread(fullfile(img_dir, image_files(frames(k)).name));
+        stack(:,:,k) = double(img);
     end
 
-    mean_map = mean(trial_maps, 3, 'omitnan');
+    baseline = mean(stack(:,:,baseline_idx), 3);
+    response = mean(stack(:,:,response_idx), 3);
+
+    dff = (response - baseline) ./ baseline;
+    dff_trials(:,:,i) = dff;
+end
 end
