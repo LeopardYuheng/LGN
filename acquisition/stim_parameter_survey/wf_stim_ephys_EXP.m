@@ -19,6 +19,9 @@ load('beep.mat','y');
 camChan       = 1;       % PulsePal output channel wired to camera trigger input
 ttl_high_s    = 0.010;   % 10 ms high
 ttl_low_s     = 0.090;   % 90 ms low  -> 10 Hz frame triggers
+
+% ttl_high_s    = 0.010;   % 10 ms high
+% ttl_low_s     = 0.115;   % 115 ms low  -> 8 Hz frame triggers
 cam_settle_s  = 2.0;     % time to let camera start after triggers begin
 
 % --- Ripple stim fixed waveform parameters ---
@@ -37,20 +40,20 @@ currents_uA = [0 2 3 4 5 7];
 % currents_uA = [0 7];
 
 
-channels    = [14 16 18 27 35 67 77 81 110 118];
-% channels    = [16  120];
+channels    = [16 18 28 32 50 84 86 87 96 114 122];
+% channels    = [16 120];
 
 num_trials_per_parameter = 30;
-12
+
 % --- Saving ---
 parent_dir = 'C:\Users\xiela\OneDrive\Desktop\Albert';  % change to your lab root
 base_name  = 'wf_stim_trials';
 animal_dir = uigetdir(parent_dir,'Select animal folder');
 date_str   = datestr(now, 'yyyy-mm-dd');
-save_path  = fullfile(animal_dir, date_str, 'wf_ephys_stim_survey');
+save_path  = fullfile(animal_dir, date_str, 'wf_stim_survey');
 
 
-%% ---------------- Build trial list CSV (trial structure lives here) ----------------
+% ---------------- Build trial list CSV (trial structure lives here) ----------------
 % This writes the CSV AND returns the in-memory table.
 [csv_path, trial_table_written] = write_trials_to_csv_wf_stim( ...
     currents_uA, channels, num_trials_per_parameter, save_path, base_name);
@@ -177,20 +180,7 @@ try
 catch ME
     fprintf('\nERROR/STOP: %s\n', ME.message);
 end
-
-%% ---------------- Stop PulsePal camera trigger ----------------
-
-% This needs to get moveec higher
 pause(2);
-try
-    AbortPulsePal;
-    EndPulsePal();
-catch
-    % no-op
-end
-
-fprintf('Done.\n');
-
 %% ---------------- Stop ephys recording ----------------
 pause(2);
 
@@ -203,6 +193,22 @@ catch ME
     fprintf('Stop command returned warning/error: %s\n', ME.message);
     fprintf('If Trellis shows recording has stopped, continuing anyway.\n');
 end
+
+%% ---------------- Stop PulsePal camera trigger ----------------
+
+% This needs to get moveec higher
+try
+    AbortPulsePal;
+    EndPulsePal();
+catch
+    % no-op
+end
+pause(2);
+
+fprintf('Pulsepal stopped.\n');
+
+
+
 
 %% ---------------- Save run log ----------------
 RunLog.csv_path                   = csv_path;

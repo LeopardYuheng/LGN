@@ -1,26 +1,22 @@
 % This script:
-%   - Loads {subject}_{date}_ripple_timing.mat (contains "ripple_timing")
+%   - Loads {subject}_{date}_dio_stim_timing.mat (contains "session")
 %   - Loads {subject}_{date}_reference_mask_and_retino_alignment.mat (contains "day_setup")
 %   - Sorts TIFF filenames
 %   - Verifies frame alignment
 %   - Looks at SMA2 / PulsePal timestamps if present
-%   - Uses SMA3 camera-ready gating if present to identify TIFF-backed SMA1 frames
 %   - Loads CSV (trial_index, stim_chan, current_uA)
-%   - Builds clean bookkeeping struct "wf_trial_alignment"
+%   - Builds clean bookkeeping struct "out"
 %
 % It does NOT compute trial maps or ΔF/F.
 %
 % Output:
-%   analysis/{subject}_{date}_wf_trial_alignment.mat
+%   analysis/{subject}_{date}_wf_stim_aligned_out.mat
 %
-% Final wf_trial_alignment contains:
-%   wf_trial_alignment.reference_mask
-%   wf_trial_alignment.retino_align
-%   wf_trial_alignment.sma2_times_s
-%   wf_trial_alignment.has_sma2
-%   wf_trial_alignment.sma3_times_s
-%   wf_trial_alignment.has_sma3
-%   wf_trial_alignment.frame_alignment_mode
+% Final out contains:
+%   out.reference_mask
+%   out.retino_align
+%   out.sma2_times_s
+%   out.has_sma2
 % in addition to trial timing / CSV alignment / frame bookkeeping
 
 close all; clc; clear; fclose('all');
@@ -38,7 +34,7 @@ if isequal(setup_name,0), error('No day setup file selected.'); end
 setup_file = fullfile(setup_path, setup_name);
 
 [ses_name, ses_path] = uigetfile('*.mat', ...
-    'Select {subject}_{date}_ripple_timing.mat');
+    'Select {subject}_{date}_dio_stim_timing.mat');
 if isequal(ses_name,0), error('No session file selected.'); end
 session_mat = fullfile(ses_path, ses_name);
 
@@ -88,8 +84,10 @@ if isfield(day_setup,'date_str') && ~isempty(day_setup.date_str)
     date_str = char(string(day_setup.date_str));
 end
 
-% 2) Backup: from ripple timing metadata
-session_meta = load_ripple_timing_struct(session_mat);
+% 2) Backup: from session metadata
+Xmeta = load(session_mat, 'session');
+assert(isfield(Xmeta,'session'), 'Session file must contain variable "session".');
+session_meta = Xmeta.session;
 
 if (isempty(strtrim(subject_id)) || isempty(strtrim(date_str))) && isfield(session_meta,'metadata')
     md = session_meta.metadata;
@@ -146,10 +144,12 @@ end
 fprintf('Metadata:\n  subject_id = %s\n  date_str   = %s\n', subject_id, date_str);
 
 %% -------------------------
-% Load ripple timing
+% Load session
 % -------------------------
 
-session = load_ripple_timing_struct(session_mat);
+X = load(session_mat,'session');
+assert(isfield(X,'session'), 'Session file must contain variable "session"');
+session = X.session;
 
 assert(isfield(session,'frames') && isfield(session.frames,'time_s'), ...
     'session.frames.time_s missing');
@@ -159,14 +159,14 @@ dt = diff(frame_times_s);
 assert(~isempty(dt), 'Not enough frame times.');
 Freq = 1 / median(dt);
 
-assert(isfield(session,'trains') && isfield(session.trains,'time_s'), ...
-    'session.trains.time_s missing');
+assert(isfield(session,'trains') && isfield(session.trains,'frame_idx'), ...
+    'session.trains.frame_idx missing');
 assert(isfield(session.trains,'channel'), ...
     'session.trains.channel missing');
 
-train_times_s   = double(session.trains.time_s(:));
+train_frame_idx = double(session.trains.frame_idx(:));
 train_channel   = double(session.trains.channel(:));
-n_trains = numel(train_times_s);
+n_trains = numel(train_frame_idx);
 
 fprintf('Found %d stim trains.\n', n_trains);
 fprintf('Estimated camera rate: %.3f Hz\n', Freq);
@@ -195,62 +195,17 @@ else
 end
 
 %% -------------------------
-% Pull SMA3 camera-ready timestamps / gated frame list
-% Exact expected fields:
-%   session.sma3.time_s
-%   session.frames_ready.time_s
-% -------------------------
-
-has_sma3 = false;
-sma3_times_s = [];
-sma3_values = [];
-frames_ready_s = [];
-frames_ready_raw_idx = [];
-sma3_source_name = '';
-
-if isfield(session,'sma3') && isfield(session.sma3,'time_s') && ~isempty(session.sma3.time_s)
-    sma3_times_s = double(session.sma3.time_s(:));
-    sma3_times_s = sma3_times_s(isfinite(sma3_times_s));
-    has_sma3 = ~isempty(sma3_times_s);
-    sma3_source_name = 'session.sma3.time_s';
-
-    if isfield(session.sma3,'value') && ~isempty(session.sma3.value)
-        sma3_values = double(session.sma3.value(:));
-        if numel(sma3_values) ~= numel(sma3_times_s)
-            warning('session.sma3.value length mismatch. Ignoring SMA3 values.');
-            sma3_values = [];
-        end
-    end
-end
-
-if isfield(session,'frames_ready') && isfield(session.frames_ready,'time_s') && ~isempty(session.frames_ready.time_s)
-    frames_ready_s = double(session.frames_ready.time_s(:));
-    frames_ready_s = frames_ready_s(isfinite(frames_ready_s));
-
-    if isfield(session.frames_ready,'raw_frame_idx') && ~isempty(session.frames_ready.raw_frame_idx)
-        frames_ready_raw_idx = double(session.frames_ready.raw_frame_idx(:));
-    else
-        frames_ready_raw_idx = [];
-    end
-end
-
-if has_sma3
-    fprintf('Found %d SMA3 camera-ready events from %s\n', ...
-        numel(sma3_times_s), sma3_source_name);
-end
-
-%% -------------------------
 % Sort TIFF files
 % -------------------------
 
-image_files = [dir(fullfile(img_dir, '*.tif')); dir(fullfile(img_dir, '*.tiff'))];
+image_files = dir(fullfile(img_dir, '*.tif'));
 assert(~isempty(image_files), 'No TIFF files found.');
 
 nFiles = numel(image_files);
 nums = nan(nFiles,1);
 
 for i = 1:nFiles
-    tok = regexp(image_files(i).name, '(\d+)\.(tif|tiff)$', 'tokens', 'once');
+    tok = regexp(image_files(i).name, '(\d+)\.tif$', 'tokens', 'once');
     if isempty(tok)
         error('Filename "%s" missing trailing index.', image_files(i).name);
     end
@@ -312,86 +267,16 @@ else
 end
 
 %% -------------------------
-% Keep SMA1 as the authoritative camera output.
-% Use SMA3 only to identify which SMA1 triggers were TIFF-backed.
-% -------------------------
-
-n_tiffs = numel(image_files);
-
-selected_frame_alignment_mode = 'sma1_camera_output';
-selected_frame_times_s = frame_times_s;
-selected_raw_frame_idx = (1:numel(frame_times_s))';
-tiff_backed_frame_times_s = frame_times_s;
-tiff_backed_raw_frame_idx = selected_raw_frame_idx;
-
-if ~isempty(frames_ready_s)
-    frames_ready_count = numel(frames_ready_s);
-    raw_count = numel(frame_times_s);
-
-    raw_mismatch = abs(raw_count - n_tiffs);
-    ready_mismatch = abs(frames_ready_count - n_tiffs);
-
-    if ready_mismatch < raw_mismatch
-        tiff_backed_frame_times_s = frames_ready_s;
-        if ~isempty(frames_ready_raw_idx) && numel(frames_ready_raw_idx) == numel(frames_ready_s)
-            tiff_backed_raw_frame_idx = frames_ready_raw_idx;
-            selected_frame_alignment_mode = 'sma1_camera_output_with_sma3_tiff_backed_subset';
-        else
-            tiff_backed_raw_frame_idx = nan(numel(frames_ready_s),1);
-            selected_frame_alignment_mode = 'sma1_camera_output_with_sma3_tiff_backed_subset_no_rawidx';
-        end
-    else
-        selected_frame_alignment_mode = 'sma1_camera_output_only';
-    end
-else
-    selected_frame_alignment_mode = 'sma1_camera_output_only';
-end
-
-fprintf('\nFrame stream selection:\n');
-fprintf('  raw camera triggers         : %d\n', numel(frame_times_s));
-if ~isempty(frames_ready_s)
-    fprintf('  SMA3-ready gated triggers   : %d\n', numel(frames_ready_s));
-end
-fprintf('  TIFF frames                 : %d\n', n_tiffs);
-fprintf('  selected mode               : %s\n', selected_frame_alignment_mode);
-
-if isempty(tiff_backed_frame_times_s)
-    error('Selected TIFF-backed frame stream is empty. Cannot align stim trains to TIFFs.');
-end
-
-train_frame_idx = nan(n_trains,1);
-for i = 1:n_trains
-    [~, j] = min(abs(tiff_backed_frame_times_s - train_times_s(i)));
-    train_frame_idx(i) = j;
-end
-
-train_frame_idx_raw_camera = nan(n_trains,1);
-for i = 1:n_trains
-    [~, j] = min(abs(frame_times_s - train_times_s(i)));
-    train_frame_idx_raw_camera(i) = j;
-end
-
-if ~isempty(frames_ready_s)
-    train_frame_idx_ready_camera = nan(n_trains,1);
-    for i = 1:n_trains
-        [~, j] = min(abs(frames_ready_s - train_times_s(i)));
-        train_frame_idx_ready_camera(i) = j;
-    end
-else
-    train_frame_idx_ready_camera = [];
-end
-
-%% -------------------------
 % Validate frame indices
 % -------------------------
 
+n_tiffs   = numel(image_files);
 valid_idx = train_frame_idx >= 1 & train_frame_idx <= n_tiffs;
 bad_idx   = ~valid_idx;
 
 fprintf('\nFrame alignment diagnostics:\n');
 fprintf('  TIFF frames                 : %d\n', n_tiffs);
 fprintf('  Camera frame timestamps     : %d\n', numel(frame_times_s));
-fprintf('  TIFF-backed SMA1 frames     : %d (%s)\n', numel(tiff_backed_frame_times_s), selected_frame_alignment_mode);
 fprintf('  Stim trains                 : %d\n', numel(train_frame_idx));
 fprintf('  Valid stim->frame mappings  : %d\n', sum(valid_idx));
 fprintf('  Invalid stim->frame mappings: %d\n', sum(bad_idx));
@@ -400,11 +285,6 @@ if has_sma2
     fprintf('  SMA2 / PulsePal timestamps  : %d\n', numel(sma2_times_s));
     fprintf('  SMA2 - camera frame count   : %+d\n', numel(sma2_times_s) - numel(frame_times_s));
     fprintf('  SMA2 - TIFF frame count     : %+d\n', numel(sma2_times_s) - n_tiffs);
-end
-
-if ~isempty(frames_ready_s)
-    fprintf('  SMA3-ready frame count      : %d\n', numel(frames_ready_s));
-    fprintf('  SMA3-ready - TIFF count     : %+d\n', numel(frames_ready_s) - n_tiffs);
 end
 
 if any(bad_idx)
@@ -416,15 +296,15 @@ if any(bad_idx)
 end
 
 stim_times_from_frameidx = nan(size(train_frame_idx));
-stim_times_from_frameidx(valid_idx) = tiff_backed_frame_times_s(train_frame_idx(valid_idx));
+stim_times_from_frameidx(valid_idx) = frame_times_s(train_frame_idx(valid_idx));
 
-last_valid_time_s = tiff_backed_frame_times_s(min(n_tiffs, numel(tiff_backed_frame_times_s)));
+last_valid_time_s = frame_times_s(min(n_tiffs, numel(frame_times_s)));
 
 %% -------------------------
 % Plot 1: full session timeline
 % -------------------------
 
-fig_diag1 = figure('Name','Stim-camera-SMA2-SMA3 alignment overview','Color','w');
+fig_diag1 = figure('Name','Stim-camera-SMA2 alignment overview','Color','w');
 hold on;
 
 plot(frame_times_s, ones(size(frame_times_s)), 'k.', 'MarkerSize', 4);
@@ -434,42 +314,29 @@ if has_sma2
         'g.', 'MarkerSize', 8);
 end
 
-if ~isempty(frames_ready_s)
-    plot(frames_ready_s, 1.06*ones(size(frames_ready_s)), ...
-        'c.', 'MarkerSize', 8);
-end
-
-plot(stim_times_from_frameidx(valid_idx), 1.09*ones(sum(valid_idx),1), ...
+plot(stim_times_from_frameidx(valid_idx), 1.06*ones(sum(valid_idx),1), ...
     'bo', 'MarkerSize', 4, 'LineWidth', 1);
 
 if any(bad_idx)
-    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.12*ones(sum(bad_idx),1), ...
+    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.09*ones(sum(bad_idx),1), ...
         'rx', 'MarkerSize', 8, 'LineWidth', 1.5);
 end
 
 xline(last_valid_time_s, 'r--', 'LineWidth', 1.5, ...
     'Label', 'Last TIFF-backed frame', 'LabelVerticalAlignment', 'bottom');
 
-if has_sma2 && ~isempty(frames_ready_s)
-    ylim([0.98 1.14]);
-    yticks([1.00 1.03 1.06 1.09 1.12]);
-    yticklabels({'Camera frames','SMA2 triggers','SMA3-ready frames','Valid stim trains','Invalid stim trains'});
-elseif has_sma2
-    ylim([0.98 1.13]);
-    yticks([1.00 1.03 1.09 1.12]);
+if has_sma2
+    ylim([0.98 1.11]);
+    yticks([1.00 1.03 1.06 1.09]);
     yticklabels({'Camera frames','SMA2 triggers','Valid stim trains','Invalid stim trains'});
-elseif ~isempty(frames_ready_s)
-    ylim([0.98 1.13]);
-    yticks([1.00 1.06 1.09 1.12]);
-    yticklabels({'Camera frames','SMA3-ready frames','Valid stim trains','Invalid stim trains'});
 else
-    ylim([0.98 1.13]);
-    yticks([1.00 1.09 1.12]);
+    ylim([0.98 1.10]);
+    yticks([1.00 1.06 1.09]);
     yticklabels({'Camera frames','Valid stim trains','Invalid stim trains'});
 end
 
 xlabel('Time (s)');
-title(sprintf('Full session: %s', strrep(selected_frame_alignment_mode,'_',' ')));
+title('Full session: camera frames vs SMA2 vs stim trains');
 grid on;
 
 saveas(fig_diag1, fullfile(analysisFolder, ...
@@ -479,7 +346,7 @@ saveas(fig_diag1, fullfile(analysisFolder, ...
 % Plot 2: end-of-session zoom
 % -------------------------
 
-fig_diag2 = figure('Name','Stim-camera-SMA2-SMA3 alignment end zoom','Color','w');
+fig_diag2 = figure('Name','Stim-camera-SMA2 alignment end zoom','Color','w');
 hold on;
 
 t_end = frame_times_s(end);
@@ -495,18 +362,12 @@ if has_sma2
         'g.', 'MarkerSize', 10);
 end
 
-if ~isempty(frames_ready_s)
-    ready_keep = frames_ready_s >= t_start_zoom & frames_ready_s <= t_end;
-    plot(frames_ready_s(ready_keep), 1.06*ones(sum(ready_keep),1), ...
-        'c.', 'MarkerSize', 10);
-end
-
 valid_keep = valid_idx & stim_times_from_frameidx >= t_start_zoom;
-plot(stim_times_from_frameidx(valid_keep), 1.09*ones(sum(valid_keep),1), ...
+plot(stim_times_from_frameidx(valid_keep), 1.06*ones(sum(valid_keep),1), ...
     'bo', 'MarkerSize', 5, 'LineWidth', 1);
 
 if any(bad_idx)
-    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.12*ones(sum(bad_idx),1), ...
+    plot(last_valid_time_s * ones(sum(bad_idx),1), 1.09*ones(sum(bad_idx),1), ...
         'rx', 'MarkerSize', 9, 'LineWidth', 1.5);
 end
 
@@ -515,21 +376,13 @@ xline(last_valid_time_s, 'r--', 'LineWidth', 1.5, ...
 
 xlim([t_start_zoom t_end]);
 
-if has_sma2 && ~isempty(frames_ready_s)
-    ylim([0.98 1.14]);
-    yticks([1.00 1.03 1.06 1.09 1.12]);
-    yticklabels({'Camera frames','SMA2 triggers','SMA3-ready frames','Valid stim trains','Invalid stim trains'});
-elseif has_sma2
-    ylim([0.98 1.13]);
-    yticks([1.00 1.03 1.09 1.12]);
+if has_sma2
+    ylim([0.98 1.11]);
+    yticks([1.00 1.03 1.06 1.09]);
     yticklabels({'Camera frames','SMA2 triggers','Valid stim trains','Invalid stim trains'});
-elseif ~isempty(frames_ready_s)
-    ylim([0.98 1.13]);
-    yticks([1.00 1.06 1.09 1.12]);
-    yticklabels({'Camera frames','SMA3-ready frames','Valid stim trains','Invalid stim trains'});
 else
-    ylim([0.98 1.13]);
-    yticks([1.00 1.09 1.12]);
+    ylim([0.98 1.10]);
+    yticks([1.00 1.06 1.09]);
     yticklabels({'Camera frames','Valid stim trains','Invalid stim trains'});
 end
 
@@ -670,10 +523,9 @@ if any(bad_idx)
     bad_table = table( ...
         find(bad_idx), ...
         train_frame_idx(bad_idx), ...
-        train_frame_idx_raw_camera(bad_idx), ...
         trial_stim_chan(bad_idx), ...
         trial_current_uA(bad_idx), ...
-        'VariableNames', {'stim_train_number','frame_idx','raw_camera_frame_idx','stim_chan','current_uA'});
+        'VariableNames', {'stim_train_number','frame_idx','stim_chan','current_uA'});
 
     disp(bad_table);
 
@@ -682,7 +534,7 @@ if any(bad_idx)
 end
 
 %% -------------------------
-% Build FINAL wf_trial_alignment struct
+% Build FINAL out struct
 % -------------------------
 
 out = struct();
@@ -700,14 +552,8 @@ out.n_frames           = numel(image_files);
 
 out.Freq          = Freq;
 out.frame_times_s = frame_times_s;
-out.frame_times_selected_s = tiff_backed_frame_times_s;
-out.frame_alignment_mode = selected_frame_alignment_mode;
-out.frame_alignment_raw_frame_idx = tiff_backed_raw_frame_idx;
 
 out.trial_onset_frame_idx = train_frame_idx;
-out.trial_onset_time_s    = train_times_s;
-out.trial_onset_frame_idx_raw_camera = train_frame_idx_raw_camera;
-out.trial_onset_frame_idx_ready_camera = train_frame_idx_ready_camera;
 out.trial_channel         = train_channel;
 out.trial_stim_chan       = trial_stim_chan;
 out.trial_current_uA      = trial_current_uA;
@@ -748,49 +594,26 @@ else
     out.sma2_minus_tiff_count   = [];
 end
 
-% SMA3 bookkeeping
-out.has_sma3 = has_sma3;
-out.sma3_source_name = sma3_source_name;
-out.sma3_times_s = sma3_times_s;
-out.sma3_values = sma3_values;
-out.frames_ready_s = frames_ready_s;
-out.frames_ready_count = numel(frames_ready_s);
-out.frames_ready_minus_tiff_count = numel(frames_ready_s) - n_tiffs;
-
 out.created_on = datestr(now);
 
 %% -------------------------
 % Save
 % -------------------------
 
-wf_trial_alignment = out;
-
-saveName = sprintf('%s_%s_wf_trial_alignment.mat', subject_id, date_str);
+saveName = sprintf('%s_%s_wf_stim_aligned_out.mat', subject_id, date_str);
 savePath = fullfile(analysisFolder, saveName);
 
-save(savePath, 'wf_trial_alignment', '-v7.3');
+save(savePath, 'out', '-v7.3');
 
-fprintf('\nSaved wf_trial_alignment file:\n  %s\n', savePath);
-fprintf('This file now contains bookkeeping + reference_mask + retino_align + SMA2/SMA3 diagnostics.\n');
+fprintf('\nSaved final aligned out file:\n  %s\n', savePath);
+fprintf('This file now contains bookkeeping + reference_mask + retino_align + SMA2 diagnostics.\n');
 
 
 %%
 fprintf('Last camera TTL time: %.3f s\n', frame_times_s(end));
-fprintf('Last TIFF-backed camera time: %.3f s\n', tiff_backed_frame_times_s(min(n_tiffs, numel(tiff_backed_frame_times_s))));
-fprintf('Difference: %.3f s\n', frame_times_s(end) - tiff_backed_frame_times_s(min(n_tiffs, numel(tiff_backed_frame_times_s))));
+fprintf('Last TIFF-backed camera time: %.3f s\n', frame_times_s(n_tiffs));
+fprintf('Difference: %.3f s\n', frame_times_s(end) - frame_times_s(n_tiffs));
 
 fprintf('Max stim frame_idx: %d\n', max(train_frame_idx));
 fprintf('Last TIFF index   : %d\n', n_tiffs);
 fprintf('Margin to TIFF end: %d frames\n', n_tiffs - max(train_frame_idx));
-
-function ripple_timing = load_ripple_timing_struct(session_mat)
-X = load(session_mat);
-
-if isfield(X, 'ripple_timing')
-    ripple_timing = X.ripple_timing;
-elseif isfield(X, 'session')
-    ripple_timing = X.session;
-else
-    error('Timing file must contain variable "ripple_timing" or legacy variable "session".');
-end
-end

@@ -8,8 +8,8 @@
 %
 % Assumes:
 % - one TIFF = one saved frame
-% - your aligned out file contains out.V1_mask_stim and out.session_mat
-% - your session file contains session.frames.time_s
+% - your wf_trial_alignment file contains wf_trial_alignment.V1_mask_stim and wf_trial_alignment.session_mat
+% - your timing file contains ripple_timing.frames.time_s
 % - if available, session.trains.time_s / onset_s / start_s will be used
 %   for principled first-vs-last anchoring
 %
@@ -19,7 +19,7 @@
 clear; clc; close all;
 
 %% ---------------- USER INPUTS ----------------
-out_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-03-17\analysis\LGN11_20260317_wf_stim_aligned_out.mat';
+out_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-03-17\analysis\LGN11_20260317_wf_trial_alignment.mat';
 
 % Speed option for TIFF reading
 frame_step = 1;   % use 1 for every frame, 5 for quick QC
@@ -29,9 +29,14 @@ peak_thresh_z = 2.5;
 peak_min_dist_frames = 10;
 
 %% ---------------- LOAD OUT + SESSION ----------------
-A = load(out_file, 'out');
-assert(isfield(A, 'out'), 'File must contain variable "out".');
-out = A.out;
+A = load(out_file);
+if isfield(A, 'wf_trial_alignment')
+    out = A.wf_trial_alignment;
+elseif isfield(A, 'out')
+    out = A.out;
+else
+    error('File must contain variable "wf_trial_alignment" or legacy variable "out".');
+end
 
 assert(isfield(out, 'V1_mask_stim') && ~isempty(out.V1_mask_stim), ...
     'out.V1_mask_stim missing.');
@@ -43,9 +48,14 @@ img_dir = out.img_dir;
 
 assert(isfield(out, 'session_mat') && isfile(out.session_mat), ...
     'out.session_mat missing or invalid.');
-S = load(out.session_mat, 'session');
-assert(isfield(S, 'session'), 'Session file must contain variable "session".');
-session = S.session;
+S = load(out.session_mat);
+if isfield(S, 'ripple_timing')
+    session = S.ripple_timing;
+elseif isfield(S, 'session')
+    session = S.session;
+else
+    error('Timing file must contain variable "ripple_timing" or legacy variable "session".');
+end
 
 assert(isfield(session, 'frames') && isfield(session.frames, 'time_s'), ...
     'session.frames.time_s missing.');

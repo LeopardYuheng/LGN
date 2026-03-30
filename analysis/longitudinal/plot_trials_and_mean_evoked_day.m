@@ -5,30 +5,35 @@ set(0, 'DefaultFigureVisible', 'off');
 %% -------------------------
 % LOAD CONTAINER
 % -------------------------
-[fn, fp] = uigetfile('*.mat', 'Select container (C)');
+[fn, fp] = uigetfile('*.mat', 'Select day pointer');
 if isequal(fn,0), error('No file selected'); end
 
 S = load(fullfile(fp, fn));
-assert(isfield(S,'C'), 'Selected file must contain struct C.');
-C = S.C;
+if isfield(S,'day_pointer')
+    day_pointer = S.day_pointer;
+elseif isfield(S,'C')
+    day_pointer = S.C;
+else
+    error('Selected file must contain struct "day_pointer" or legacy struct "C".');
+end
 
-assert(isfield(C,'meta'), 'C.meta missing.');
-assert(isfield(C,'cfg'), 'C.cfg missing.');
-assert(isfield(C,'entries') && ~isempty(C.entries), 'C.entries missing or empty.');
+assert(isfield(day_pointer,'meta'), 'day_pointer.meta missing.');
+assert(isfield(day_pointer,'cfg'), 'day_pointer.cfg missing.');
+assert(isfield(day_pointer,'entries') && ~isempty(day_pointer.entries), 'day_pointer.entries missing or empty.');
 
 %% -------------------------
 % RESOLVE PATHS
 % -------------------------
-dataset_root = C.meta.dataset_root;
+dataset_root = day_pointer.meta.dataset_root;
 
-p_day = C.meta.day_setup_file_rel;
+p_day = day_pointer.meta.day_setup_file_rel;
 if exist(p_day, 'file') == 2
     day_setup_file = p_day;
 else
     day_setup_file = fullfile(dataset_root, p_day);
 end
 
-p_img = C.meta.img_dir_rel;
+p_img = day_pointer.meta.img_dir_rel;
 if exist(p_img, 'dir') == 7
     img_dir = p_img;
 else
@@ -74,16 +79,16 @@ fprintf('Found %d TIFF frames.\n', nFrames);
 %% -------------------------
 % CAMERA RATE / WINDOWS
 % -------------------------
-if isfield(C.meta, 'camera_rate_hz')
-    Fs = double(C.meta.camera_rate_hz);
-elseif isfield(C.meta, 'Freq')
-    Fs = double(C.meta.Freq);
+if isfield(day_pointer.meta, 'camera_rate_hz')
+    Fs = double(day_pointer.meta.camera_rate_hz);
+elseif isfield(day_pointer.meta, 'Freq')
+    Fs = double(day_pointer.meta.Freq);
 else
     Fs = 10;
 end
 
-pre_sec  = double(C.cfg.pre_sec);
-post_sec = double(C.cfg.post_sec);
+pre_sec  = double(day_pointer.cfg.pre_sec);
+post_sec = double(day_pointer.cfg.post_sec);
 
 pre_frames  = round(pre_sec * Fs);
 post_frames = round(post_sec * Fs);
@@ -106,7 +111,7 @@ fprintf('Response window: [%.2f %.2f] sec\n', response_sec(1), response_sec(2));
 %% -------------------------
 % RECONSTRUCT PER-TRIAL VECTORS FROM GROUPED ENTRIES
 % -------------------------
-entries = C.entries;
+entries = day_pointer.entries;
 
 frame_idx = [];
 channels  = [];

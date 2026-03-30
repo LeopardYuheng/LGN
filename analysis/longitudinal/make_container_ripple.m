@@ -1,6 +1,6 @@
 %% make_container_ripple.m
-% Builds a small pointer-only container from Ripple bookkeeping file:
-%   {subject}_{date}_wf_stim_aligned_out.mat  (contains struct "out")
+% Builds a small day pointer from a widefield trial alignment file:
+%   {subject}_{date}_wf_trial_alignment.mat
 %
 % ROBUST TO:
 %   - Partial experimental runs
@@ -22,8 +22,8 @@ cfg = struct();
 cfg.pre_sec  = 1;
 cfg.post_sec = 3;
 
-out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-03-17\analysis\LGN11_20260317_wf_stim_aligned_out_ENDALIGNED.mat';
-container_name = 'container_day_pointer_only_ripple_backwards.mat';
+out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-03-29\analysis\LGN11_20260328_wf_trial_alignment.mat';
+container_name = 'LGN11_20260328_day_pointer.mat';
 
 %% ---------------- MAIN ----------------
 container_path = make_container_ripple_(out_mat_file, cfg, container_name);
@@ -47,24 +47,27 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
     end
     cfg = fill_cfg_defaults(cfg);
 
-    if nargin < 3 || isempty(container_name)
-        container_name = 'container_day_pointer_only_ripple.mat';
-    end
-
     assert(exist(out_mat_file,'file')==2, ...
         'out_mat_file not found: %s', out_mat_file);
 
-    X = load(out_mat_file, 'out');
-    assert(isfield(X,'out'), ...
-        'Expected variable "out" in %s', out_mat_file);
-
-    out = X.out;
+    X = load(out_mat_file);
+    if isfield(X,'wf_trial_alignment')
+        out = X.wf_trial_alignment;
+    elseif isfield(X,'out')
+        out = X.out;
+    else
+        error('Expected variable "wf_trial_alignment" or legacy variable "out" in %s', out_mat_file);
+    end
 
     % -----------------------------
     % Basic metadata
     % -----------------------------
     subject_id = getfield_safe(out, 'subject_id', '');
     date_str   = getfield_safe(out, 'date_str',   '');
+
+    if nargin < 3 || isempty(container_name)
+        container_name = sprintf('%s_%s_day_pointer.mat', subject_id, date_str);
+    end
 
     img_dir        = getfield_safe(out, 'img_dir', '');
     day_setup_file = getfield_safe(out, 'day_setup_file', '');
@@ -141,32 +144,39 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
     % -----------------------------
     if ~exist(container_path,'file')
 
-        C = struct();
+        day_pointer = struct();
 
-        C.meta = struct();
-        C.meta.dataset_root = dataset_root;
-        C.meta.source       = 'ripple';
-        C.meta.subject_id   = subject_id;
-        C.meta.date_str     = date_str;
+        day_pointer.meta = struct();
+        day_pointer.meta.dataset_root = dataset_root;
+        day_pointer.meta.source       = 'ripple';
+        day_pointer.meta.subject_id   = subject_id;
+        day_pointer.meta.date_str     = date_str;
 
-        C.meta.out_mat_file_rel = relpath(out_mat_file, dataset_root);
-        C.meta.img_dir_rel      = relpath(img_dir, dataset_root);
-        C.meta.day_setup_file_rel = relpath(day_setup_file, dataset_root);        
-        C.meta.session_mat_rel  = relpath(session_mat, dataset_root);
-        C.meta.csv_file_rel     = relpath(csv_file, dataset_root);
+        day_pointer.meta.wf_trial_alignment_file_rel = relpath(out_mat_file, dataset_root);
+        day_pointer.meta.img_dir_rel      = relpath(img_dir, dataset_root);
+        day_pointer.meta.day_setup_file_rel = relpath(day_setup_file, dataset_root);        
+        day_pointer.meta.session_mat_rel  = relpath(session_mat, dataset_root);
+        day_pointer.meta.csv_file_rel     = relpath(csv_file, dataset_root);
 
-        C.meta.created_at = char(datetime('now'));
-        C.meta.updated_at = C.meta.created_at;
+        day_pointer.meta.created_at = char(datetime('now'));
+        day_pointer.meta.updated_at = day_pointer.meta.created_at;
 
-        C.cfg = cfg;
-        C.entries = struct([]);
+        day_pointer.cfg = cfg;
+        day_pointer.entries = struct([]);
 
-        save(container_path, 'C', '-v7.3');
+        save(container_path, 'day_pointer', '-v7.3');
     end
 
     M = matfile(container_path, 'Writable', true);
-    C = M.C;
-    C.cfg = cfg;
+    tmp = load(container_path);
+    if isfield(tmp,'day_pointer')
+        day_pointer = tmp.day_pointer;
+    elseif isfield(tmp,'C')
+        day_pointer = tmp.C;
+    else
+        error('Expected variable "day_pointer" or legacy variable "C" in %s', container_path);
+    end
+    day_pointer.cfg = cfg;
 
     % -----------------------------
     % Group by (stim_channel, current)
@@ -201,8 +211,8 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
 
         % Overwrite existing key if present
         exists_idx = [];
-        if isfield(C,'entries') && ~isempty(C.entries)
-            keys = string({C.entries.key});
+        if isfield(day_pointer,'entries') && ~isempty(day_pointer.entries)
+            keys = string({day_pointer.entries.key});
             j = find(keys == string(entry.key), 1);
             if ~isempty(j)
                 exists_idx = j;
@@ -210,16 +220,16 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         end
 
         if isempty(exists_idx)
-            C.entries = [C.entries; entry];
+            day_pointer.entries = [day_pointer.entries; entry];
         else
-            C.entries(exists_idx) = entry;
+            day_pointer.entries(exists_idx) = entry;
         end
     end
 
-    C.meta.updated_at = char(datetime('now'));
-    M.C = C;
+    day_pointer.meta.updated_at = char(datetime('now'));
+    M.day_pointer = day_pointer;
 
-    fprintf('\nSaved Ripple pointer-only container:\n  %s\n', container_path);
+    fprintf('\nSaved day pointer:\n  %s\n', container_path);
 end
 
 function cfg = fill_cfg_defaults(cfg)

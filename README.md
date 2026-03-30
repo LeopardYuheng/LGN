@@ -62,11 +62,37 @@ Used to measure cortical responses to thalamic (LGN) stimulation across differen
   Runs the stimulation protocol, delivering electrical stimulation across conditions (e.g., current levels, frequencies, durations) while recording widefield imaging and electrophysiology.
 
 - **`extract_nev_stim_and_camera.m`**  
-  Extracts stimulation timestamps and camera trigger signals from recorded data files (e.g., NEV), aligning neural and imaging data.
+  Extracts stimulation timestamps and camera trigger signals from recorded Ripple `.nev` files and saves a timing bookkeeping file.
+
+  Default saved output:
+  - `{subject}_{date}_ripple_timing.mat`
+  - top-level variable: `ripple_timing`
 
 ---
 
-## 4. Analysis (Response Characterization)
+## 4. Longitudinal Widefield Alignment
+
+Used to align one day of TIFF frames to Ripple timing, then package that day into a lightweight pointer object for across-day comparisons.
+
+### Scripts
+
+- **`align_wf_with_nev_extracted.m`**  
+  Loads the Ripple timing file, TIFF directory, retinotopy/day-setup file, and stimulation CSV, then builds a per-day alignment/bookkeeping file.
+
+  Default saved output:
+  - `{subject}_{date}_wf_trial_alignment.mat`
+  - top-level variable: `wf_trial_alignment`
+
+- **`make_container_ripple.m`**  
+  Converts a per-day `wf_trial_alignment` file into a lightweight grouped day pointer for downstream longitudinal analyses.
+
+  Default saved output:
+  - `{subject}_{date}_day_pointer.mat`
+  - top-level variable: `day_pointer`
+
+---
+
+## 5. Analysis (Response Characterization)
 
 Used to quantify spatial and temporal response properties.
 
@@ -85,6 +111,7 @@ Used to quantify spatial and temporal response properties.
 - Most scripts require manual interaction (e.g., ROI drawing, control point selection).
 - Data files are not included in this repository; users must provide their own datasets following the expected structure.
 - Outputs are saved locally (e.g., `.mat` files, figures) for downstream analysis.
+- During the naming transition, some scripts can still read legacy variables such as `session`, `out`, and `C`, but new outputs should use `ripple_timing`, `wf_trial_alignment`, and `day_pointer`.
 
 ---
 

@@ -1,17 +1,17 @@
 %% current_thresholding_analysis_fixedROI_with_visualfield.m
 % Fixed ROI per channel + visual field mapping
 %
-% Works with aligned out files containing:
-%   out.reference_mask.final_mask
-%   out.retino_align.V1_mask_stim
-%   out.retino_align.azi_stim
-%   out.retino_align.alt_stim
+% Works with wf_trial_alignment files containing:
+%   wf_trial_alignment.reference_mask.final_mask
+%   wf_trial_alignment.retino_align.V1_mask_stim
+%   wf_trial_alignment.retino_align.azi_stim
+%   wf_trial_alignment.retino_align.alt_stim
 %
-% Also prefers trial bookkeeping already stored in out:
-%   out.trial_onset_frame_idx
-%   out.trial_stim_chan
-%   out.trial_current_uA
-%   out.csv_file
+% Also prefers trial bookkeeping already stored in wf_trial_alignment:
+%   wf_trial_alignment.trial_onset_frame_idx
+%   wf_trial_alignment.trial_stim_chan
+%   wf_trial_alignment.trial_current_uA
+%   wf_trial_alignment.csv_file
 %
 % Requires wf utilities on path:
 %   wf_sort_tiffs
@@ -24,11 +24,16 @@ addpath('C:\Users\LuanLab\OneDrive - Rice University\Documents\GitHub\Luan_lab_r
 %% -------------------------
 % USER SELECT FILES
 % -------------------------
-[fn, fp] = uigetfile('*.mat', 'Select final aligned out file (contains out)');
+[fn, fp] = uigetfile('*.mat', 'Select wf_trial_alignment file');
 if isequal(fn,0), error('No .mat selected.'); end
 R = load(fullfile(fp, fn));
-assert(isfield(R,'out'), 'Selected .mat must contain struct variable "out".');
-out = R.out;
+if isfield(R,'wf_trial_alignment')
+    out = R.wf_trial_alignment;
+elseif isfield(R,'out')
+    out = R.out;
+else
+    error('Selected .mat must contain struct variable "wf_trial_alignment" or legacy variable "out".');
+end
 
 assert(isfield(out,'img_dir') && exist(out.img_dir,'dir')==7, 'out.img_dir missing or not found.');
 img_dir = out.img_dir;
@@ -39,10 +44,17 @@ img_dir = out.img_dir;
 if isfield(out,'trial_onset_frame_idx') && ~isempty(out.trial_onset_frame_idx)
     trial_onset_frame_idx = double(out.trial_onset_frame_idx(:));
 elseif isfield(out,'session_mat') && ~isempty(out.session_mat)
-    X = load(out.session_mat,'session');
-    assert(isfield(X,'session') && isfield(X.session,'trains') && isfield(X.session.trains,'frame_idx'), ...
-        'session_mat does not contain session.trains.frame_idx');
-    trial_onset_frame_idx = double(X.session.trains.frame_idx(:));
+    X = load(out.session_mat);
+    if isfield(X,'ripple_timing')
+        timing = X.ripple_timing;
+    elseif isfield(X,'session')
+        timing = X.session;
+    else
+        error('session_mat does not contain ripple_timing or legacy session.');
+    end
+    assert(isfield(timing,'trains') && isfield(timing.trains,'frame_idx'), ...
+        'session_mat does not contain trains.frame_idx');
+    trial_onset_frame_idx = double(timing.trains.frame_idx(:));
 else
     error('Need out.trial_onset_frame_idx OR out.session_mat with session.trains.frame_idx.');
 end
@@ -121,7 +133,7 @@ if isfield(out,'trial_stim_chan') && isfield(out,'trial_current_uA') && ...
         warning('out trial vectors do not match trial_onset_frame_idx length. Falling back to CSV.');
         use_csv_fallback = true;
     else
-        fprintf('Using trial_stim_chan and trial_current_uA directly from out.\n');
+        fprintf('Using trial_stim_chan and trial_current_uA directly from wf_trial_alignment.\n');
         csv_file = '';
     end
 else
@@ -131,7 +143,7 @@ end
 if use_csv_fallback
     if isfield(out,'csv_file') && ~isempty(out.csv_file) && exist(out.csv_file,'file')==2
         csv_file = out.csv_file;
-        fprintf('Using out.csv_file:\n  %s\n', csv_file);
+        fprintf('Using wf_trial_alignment.csv_file:\n  %s\n', csv_file);
     else
         [csv_name, csv_path] = uigetfile({'*.csv;*.txt','CSV or TXT (*.csv, *.txt)'}, ...
             'Select CSV: trial_index, stim_chan, current_uA');
@@ -231,9 +243,16 @@ end
 if isfield(out,'Freq') && ~isempty(out.Freq)
     Freq = out.Freq;
 elseif isfield(out,'session_mat') && ~isempty(out.session_mat)
-    X = load(out.session_mat,'session');
-    if isfield(X,'session') && isfield(X.session,'frames') && isfield(X.session.frames,'time_s')
-        dt = diff(double(X.session.frames.time_s(:)));
+    X = load(out.session_mat);
+    if isfield(X,'ripple_timing')
+        timing = X.ripple_timing;
+    elseif isfield(X,'session')
+        timing = X.session;
+    else
+        timing = [];
+    end
+    if isstruct(timing) && isfield(timing,'frames') && isfield(timing.frames,'time_s')
+        dt = diff(double(timing.frames.time_s(:)));
         Freq = 1 / median(dt);
     else
         error('No out.Freq and cannot infer from session.frames.time_s.');

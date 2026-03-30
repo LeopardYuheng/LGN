@@ -17,8 +17,11 @@ load('beep.mat','y');
 %% ---------------- USER PARAMETERS ----------------
 % --- PulsePal camera trigger (free-running) ---
 camChan       = 1;       % PulsePal output channel wired to camera trigger input
+% ttl_high_s    = 0.010;   % 10 ms high
+% ttl_low_s     = 0.090;   % 90 ms low  -> 10 Hz frame triggers
+
 ttl_high_s    = 0.010;   % 10 ms high
-ttl_low_s     = 0.090;   % 90 ms low  -> 10 Hz frame triggers
+ttl_low_s     = 0.115;   % 115 ms low  -> 8 Hz frame triggers
 cam_settle_s  = 2.0;     % time to let camera start after triggers begin
 
 % --- Ripple stim fixed waveform parameters ---
@@ -33,12 +36,12 @@ default_stim_duration_s = 0.5;  % X
 ITI_s = 3;
 
 % --- Trial list parameters (vary by trial) ---
-currents_uA = [0 2 3 4 5 7];
-% currents_uA = [0 7];
+% currents_uA = [0 2 3 4 5 7];
+currents_uA = [0 7];
 
 
-channels    = [14 16 1                                                                              8 28 32 50 75 86 87 110 118];
-% channels    = [16  120];
+% channels    = [14 16 18 27 35 67 77 81 110 118];
+channels    = [16  120];
 
 num_trials_per_parameter = 30;
 
@@ -47,10 +50,10 @@ parent_dir = 'C:\Users\xiela\OneDrive\Desktop\Albert';  % change to your lab roo
 base_name  = 'wf_stim_trials';
 animal_dir = uigetdir(parent_dir,'Select animal folder');
 date_str   = datestr(now, 'yyyy-mm-dd');
-save_path  = fullfile(animal_dir, date_str, 'wf_ephys_stim_survey');
+save_path  = fullfile(animal_dir, date_str, 'test4');
 
 
-%% ---------------- Build trial list CSV (trial structure lives here) ----------------
+% ---------------- Build trial list CSV (trial structure lives here) ----------------
 % This writes the CSV AND returns the in-memory table.
 [csv_path, trial_table_written] = write_trials_to_csv_wf_stim( ...
     currents_uA, channels, num_trials_per_parameter, save_path, base_name);
@@ -165,7 +168,7 @@ try
         xippmex('stimseq', cmd);
         stim_call_time(i)  = toc(t_start);
         trial_wallclock(i) = string(datetime('now'));
-        pause(default_stim_duration_s);
+        pause(stim_duration_s);
         % xippmex('stim', 'enable', 0);
         % pause(0.2);
         % xippmex('stim', 'enable', 1);
@@ -177,25 +180,20 @@ try
 catch ME
     fprintf('\nERROR/STOP: %s\n', ME.message);
 end
+pause(2);
 
 %% ---------------- Stop PulsePal camera trigger ----------------
 
 % This needs to get moveec higher
-pause(2);
 try
     AbortPulsePal;
     EndPulsePal();
 catch
     % no-op
 end
+pause(2);
 
 fprintf('Done.\n');
-%% ---------------- Stop ephys recording ----------------
-pause(2);
-% xippmex('trial','stopped', ephys_filename);
-
-xippmex('trial','stopped');
-fprintf('Recording stopped.\n');
 
 %% ---------------- Stop ephys recording ----------------
 pause(2);
