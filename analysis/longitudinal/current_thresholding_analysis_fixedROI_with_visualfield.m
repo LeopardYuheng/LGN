@@ -37,7 +37,7 @@ use_shared_clim = true;         % true = one CLim across all anchor plots
 shared_clim = [-0.06 0.06];               % leave [] to auto-compute from all anchor maps
                                 % or set manually, e.g. [-0.01 0.02]
 
-mask_outside_for_display = false;  % false matches montage look better
+mask_outside_for_display = true;   % keep displayed activity inside the cranial window
 use_analysis_mask_for_stats = true; % true = stats only inside final_mask & V1_mask
 
 %% -------------------------
@@ -199,7 +199,11 @@ results = struct( ...
     'alt', {}, ...
     'peak_xy', {}, ...
     'current_summary', {}, ...
-    'anchor_mean_map', {} );
+    'anchor_mean_map', {}, ...
+    'threshold_cluster_mask', {}, ...
+    'threshold_mean_map', {}, ...
+    'threshold_peak_xy', {}, ...
+    'suprathreshold_currents', {} );
 % ----- compute once near the top of the script, same as montage script -----
 pad_xy = 10;
 
@@ -258,6 +262,9 @@ for ch_i = 1:numel(unique_channels)
         'mean_evoked_map', {} );
 
     threshold_uA = nan;
+    threshold_cluster_mask = false(H,W);
+    threshold_mean_map = [];
+    threshold_peak_xy = [NaN NaN];
 
     nonzero_currents = currents_ch(currents_ch > 0);
     if isempty(nonzero_currents)
@@ -387,6 +394,20 @@ for ch_i = 1:numel(unique_channels)
 
         if isnan(threshold_uA) && has_cluster
             threshold_uA = cur;
+            threshold_cluster_mask = sig_cluster_mask;
+            threshold_mean_map = mean_evoked_map;
+
+            if mask_outside_for_display
+                threshold_mean_map(~final_mask) = nan;
+            end
+
+            threshold_search_map = mean_evoked_map;
+            threshold_search_map(~sig_cluster_mask) = nan;
+            if any(isfinite(threshold_search_map(:)))
+                [~, idx_thr_max] = max(threshold_search_map(:));
+                [y_thr_peak, x_thr_peak] = ind2sub(size(threshold_search_map), idx_thr_max);
+                threshold_peak_xy = [x_thr_peak, y_thr_peak];
+            end
         end
     end
 
@@ -427,6 +448,14 @@ for ch_i = 1:numel(unique_channels)
     results(end).peak_xy = [x_peak, y_peak];
     results(end).current_summary = current_summary;
     results(end).anchor_mean_map = anchor_mean_map;
+    results(end).threshold_cluster_mask = threshold_cluster_mask;
+    results(end).threshold_mean_map = threshold_mean_map;
+    results(end).threshold_peak_xy = threshold_peak_xy;
+    if isempty(current_summary)
+        results(end).suprathreshold_currents = [];
+    else
+        results(end).suprathreshold_currents = [current_summary([current_summary.has_cluster]).current_uA];
+    end
 end
 fprintf('\nGLOBAL V1 VALUE RANGE (all trials):\n');
 fprintf('  min = %.5f\n', global_min_v1);
@@ -474,9 +503,9 @@ for i = 1:numel(results)
     anchor_current = results(i).anchor_current_uA;
     anchor_mean_map = results(i).anchor_mean_map;
     current_summary = results(i).current_summary;
-    x_peak = results(i).peak_xy(1);
-    y_peak = results(i).peak_xy(2);
     threshold_uA = results(i).threshold_uA;
+    threshold_cluster_mask = results(i).threshold_cluster_mask;
+    threshold_mean_map = results(i).threshold_mean_map;
 
     fig_ch = figure('Color','w', 'Name', sprintf('Channel %d summary', ch));
 
@@ -488,7 +517,19 @@ for i = 1:numel(results)
     % anchor_mean_map = mean(dff_cur, 3, 'omitnan');
     % for the anchor current, with NO extra subtraction and NO masking for display
     
-    imagesc(ax_map, anchor_mean_map);
+    if ~isempty(threshold_mean_map)
+        display_map = threshold_mean_map;
+        display_current = threshold_uA;
+    else
+        display_map = anchor_mean_map;
+        display_current = anchor_current;
+    end
+
+    if mask_outside_for_display
+        display_map(~final_mask) = nan;
+    end
+
+    imagesc(ax_map, display_map);
     axis(ax_map, 'image');
     axis(ax_map, 'off');
     set(ax_map, 'YDir', 'normal');
@@ -503,7 +544,7 @@ for i = 1:numel(results)
         caxis(ax_map, clim_to_use);
     elseif ~use_shared_clim
         % optional per-plot autoscale that matches montage logic
-        vals = anchor_mean_map(:);
+        vals = display_map(:);
         vals = vals(isfinite(vals));
         if isempty(vals)
             clim_local = [-0.01 0.01];
@@ -524,12 +565,15 @@ for i = 1:numel(results)
     visboundaries(ax_map, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
     visboundaries(ax_map, final_mask, 'Color', 'y', 'LineWidth', 1.0);
     
-    % same peak marker if you want it
-    if ~isnan(x_peak)
-        plot(ax_map, x_peak, y_peak, 'wo', 'MarkerSize', 8, 'LineWidth', 2);
+    if any(threshold_cluster_mask(:))
+        B = bwboundaries(threshold_cluster_mask, conn, 'noholes');
+        for b_i = 1:numel(B)
+            boundary = B{b_i};
+            plot(ax_map, boundary(:,2), boundary(:,1), 'r-', 'LineWidth', 2);
+        end
     end
     
-    title(ax_map, sprintf('Mean map\nCh %d | %g uA', ch, anchor_current), ...
+    title(ax_map, sprintf('Activated region\nCh %d | %g uA', ch, display_current), ...
         'Interpreter', 'none');
     
     cb = colorbar(ax_map, 'eastoutside');
@@ -557,25 +601,139 @@ for i = 1:numel(results)
     grid on;
 
     drawnow;
+
+    suprathreshold_idx = find([current_summary.has_cluster]);
+    if numel(suprathreshold_idx) > 1
+        fig_multi = figure('Color','w', ...
+            'Name', sprintf('Channel %d suprathreshold regions', ch));
+        tiledlayout(numel(suprathreshold_idx), 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+        for s_i = 1:numel(suprathreshold_idx)
+            cs = current_summary(suprathreshold_idx(s_i));
+            ax_cur = nexttile;
+            display_map_cur = cs.mean_evoked_map;
+            if mask_outside_for_display
+                display_map_cur(~final_mask) = nan;
+            end
+
+            imagesc(ax_cur, display_map_cur);
+            axis(ax_cur, 'image');
+            axis(ax_cur, 'off');
+            set(ax_cur, 'YDir', 'normal');
+            xlim(ax_cur, global_v1_xlim);
+            ylim(ax_cur, global_v1_ylim);
+            colormap(ax_cur, parula);
+
+            if use_shared_clim && ~isempty(clim_to_use)
+                caxis(ax_cur, clim_to_use);
+            elseif ~use_shared_clim
+                vals = display_map_cur(:);
+                vals = vals(isfinite(vals));
+                if isempty(vals)
+                    clim_local = [-0.01 0.01];
+                else
+                    q = quantile(vals, [0.02 0.98]);
+                    m = max(abs(q));
+                    if m == 0 || ~isfinite(m)
+                        m = 0.01;
+                    end
+                    clim_local = [-m m];
+                end
+                caxis(ax_cur, clim_local);
+            end
+
+            hold(ax_cur, 'on');
+            visboundaries(ax_cur, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
+            visboundaries(ax_cur, final_mask, 'Color', 'y', 'LineWidth', 1.0);
+
+            if any(cs.sig_cluster_mask(:))
+                B = bwboundaries(cs.sig_cluster_mask, conn, 'noholes');
+                for b_i = 1:numel(B)
+                    boundary = B{b_i};
+                    plot(ax_cur, boundary(:,2), boundary(:,1), 'r-', 'LineWidth', 2);
+                end
+            end
+
+            title(ax_cur, sprintf('Ch %d | %g uA', ch, cs.current_uA), ...
+                'Interpreter', 'none');
+
+            cb = colorbar(ax_cur, 'eastoutside');
+            cb.Label.String = '\DeltaF/F';
+            if use_shared_clim && ~isempty(clim_to_use)
+                cb.Limits = clim_to_use;
+            end
+        end
+
+        drawnow;
+    end
 end
 
 %% -------------------------
-% SUMMARY SCATTER PLOT
+% SUMMARY BORDER PLOT
 % -------------------------
 if isempty(results)
     warning('No channel results were generated.');
 else
-    azi_vals = [results.azi];
-    alt_vals = [results.alt];
-    thr_vals = [results.threshold_uA];
+    valid_results = results(arrayfun(@(r) isfinite(r.threshold_uA) && any(r.threshold_cluster_mask(:)), results));
 
-    fig_sum = figure('Color','w');
-    scatter(azi_vals, alt_vals, 80, thr_vals, 'filled');
-    colorbar;
-    xlabel('Azimuth');
-    ylabel('Altitude');
-    title('Channel thresholds in visual space');
-    grid on;
+    if isempty(valid_results)
+        warning('No threshold cluster masks were found for summary plotting.');
+    else
+        threshold_levels = unique([valid_results.threshold_uA]);
+        threshold_levels = sort(threshold_levels(:)');
+
+        n_levels = numel(threshold_levels);
+        n_cols = min(3, n_levels);
+        n_rows = ceil(n_levels / n_cols);
+
+        fig_sum = figure('Color','w', 'Name', 'Threshold activation regions by current');
+        tiledlayout(n_rows, n_cols, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+        cmap = lines(max(numel(valid_results),1));
+
+        for lvl_i = 1:n_levels
+            thr = threshold_levels(lvl_i);
+            ax_sum = nexttile;
+            imagesc(ax_sum, double(final_mask));
+            axis(ax_sum, 'image');
+            axis(ax_sum, 'off');
+            set(ax_sum, 'YDir', 'normal');
+            xlim(ax_sum, global_v1_xlim);
+            ylim(ax_sum, global_v1_ylim);
+            colormap(ax_sum, gray);
+            caxis(ax_sum, [0 1]);
+            hold(ax_sum, 'on');
+
+            visboundaries(ax_sum, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
+            visboundaries(ax_sum, final_mask, 'Color', 'y', 'LineWidth', 1.2);
+
+            idx_thr = find([valid_results.threshold_uA] == thr);
+            for j = 1:numel(idx_thr)
+                r_idx = idx_thr(j);
+                mask_i = valid_results(r_idx).threshold_cluster_mask & final_mask;
+                B = bwboundaries(mask_i, conn, 'noholes');
+
+                for b_i = 1:numel(B)
+                    boundary = B{b_i};
+                    patch(ax_sum, boundary(:,2), boundary(:,1), cmap(r_idx,:), ...
+                        'FaceAlpha', 0.12, 'EdgeColor', cmap(r_idx,:), 'LineWidth', 2);
+                end
+
+                peak_xy = valid_results(r_idx).threshold_peak_xy;
+                if all(isfinite(peak_xy))
+                    plot(ax_sum, peak_xy(1), peak_xy(2), 'o', ...
+                        'MarkerFaceColor', cmap(r_idx,:), ...
+                        'MarkerEdgeColor', 'k', 'MarkerSize', 5);
+                    text(ax_sum, peak_xy(1) + 3, peak_xy(2), ...
+                        sprintf('Ch %d', valid_results(r_idx).channel), ...
+                        'Color', cmap(r_idx,:), 'FontWeight', 'bold', ...
+                        'FontSize', 9, 'HorizontalAlignment', 'left');
+                end
+            end
+
+            title(ax_sum, sprintf('Threshold %g uA', thr), 'Interpreter', 'none');
+        end
+    end
 end
 
 %% -------------------------
