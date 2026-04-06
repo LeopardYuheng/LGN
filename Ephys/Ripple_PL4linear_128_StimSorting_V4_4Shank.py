@@ -45,7 +45,7 @@ import sortingview.views as vv
 
 
 #%%
-# —— 顶层全局变量（不要改名） ——
+# Top-level global variables (do not rename)
 _global_traces = None
 _global_stim_ts = None
 _global_fs = None
@@ -55,7 +55,7 @@ _global_order = None
 
 def _init_worker(orig_traces, stim_timestamps, fs, n_samples, ms_start, order):
     """
-    Pool initializer: 在每个子进程里设置全局变量
+    Pool initializer: set global variables in each child process.
     """
     global _global_traces, _global_stim_ts, _global_fs, _global_n_samples
     global _global_ms_start, _global_order
@@ -68,7 +68,8 @@ def _init_worker(orig_traces, stim_timestamps, fs, n_samples, ms_start, order):
 
 def _worker(ch):
     """
-    只接受一个通道号，使用全局变量做多项式扣除
+    Accept only a single channel index and use global variables
+    to perform polynomial subtraction.
     """
     channel_data = _global_traces[:, ch].copy()
     for ts, next_ts in zip(_global_stim_ts, _global_stim_ts[1:]):
@@ -89,10 +90,11 @@ def remove_polynomial_trend(rec_obj,
                             Probe,
                             Bad_Ch_Idx=None,
                             ms_start=1.4,
-                            ms_end=10,      # 目前不再用 ms_end
+                            ms_end=10,      # ms_end is currently unused
                             order=3):
     """
-    跳过 Bad_Ch_Idx 里的通道，对其他通道并行做多项式趋势扣除。
+    Skip channels listed in Bad_Ch_Idx and perform polynomial
+    trend subtraction on the remaining channels in parallel.
     """
     if Bad_Ch_Idx is None:
         Bad_Ch_Idx = []
@@ -106,7 +108,7 @@ def remove_polynomial_trend(rec_obj,
     start_time = time.time()
     total = len(good_channels)
 
-    # 用 Pool(initializer=..., initargs=...) 设置全局变量
+    # Use Pool(initializer=..., initargs=...) to set global variables
     pool = multiprocessing.Pool(
         initializer=_init_worker,
         initargs=(orig_traces, stim_timestamps, fs, n_samples, ms_start, order)
@@ -118,9 +120,9 @@ def remove_polynomial_trend(rec_obj,
         print(f"Progress: {idx}/{total} channels processed", end='\r')
     pool.close()
     pool.join()
-    print()  # 换行
+    print()  # newline
 
-    # 构造新的 Recording
+    # Construct a new Recording
     new_rec = si.NumpyRecording(
         new_traces,
         sampling_frequency=fs,
@@ -132,7 +134,7 @@ def remove_polynomial_trend(rec_obj,
     print(f"Trend correction done: {total} good channels "
           f"(skipped {len(Bad_Ch_Idx)}) in {elapsed:.2f}s")
 
-    # 可选地显示 probe 信息
+    # Optionally display probe information
     probe_rec = new_rec.get_probe()
     df_probe = probe_rec.to_dataframe(complete=True)[
         ["contact_ids", "device_channel_indices"]
@@ -154,36 +156,42 @@ def remove_polynomial_trend_serial(
     order=5
 ):
     """
-    串行：自动起止 + 跨 good channels 的逐样本中位数扣除 + 单通道拟合去趋势。
-    流程（每个相邻刺激对的片段）：
-      1) 用原始信号在所有 good channels 上计算该段的逐样本中位数 median_vec
-      2) 对每个 good channel：centered = raw_segment - median_vec
-      3) 用 centered 做 polyfit（阶数=order），trend removal: centered - trend
-      4) 边界保持：段首/段尾恢复为 centered 的原值
-      5) 写回 new_traces（保存的是“已扣中位数且去趋势”的结果）
+    Serial version: automatically determines segment bounds, subtracts the
+    per-sample median across good channels, then performs per-channel trend
+    fitting and removal.
+
+    Workflow for each segment between adjacent stimulation events:
+      1) Compute the per-sample median vector `median_vec` from the original
+         signal across all good channels.
+      2) For each good channel: `centered = raw_segment - median_vec`
+      3) Fit a polynomial to `centered` (degree=`order`) and remove the trend
+      4) Preserve boundaries by restoring the first/last sample to the
+         original centered values
+      5) Write the "median-subtracted and detrended" result back to
+         `new_traces`
     """
     import numpy as np
     import time
-    import spikeinterface as si  # 需已安装
+    import spikeinterface as si  # must already be installed
 
     if Bad_Ch_Idx is None:
         Bad_Ch_Idx = []
 
     # ---------------------------
-    # 0) 基本信息
+    # 0) Basic information
     # ---------------------------
     fs = rec_obj.get_sampling_frequency()
     traces = rec_obj.get_traces()  # (n_samples, n_channels)
     n_samples, n_channels = traces.shape
 
-    orig_traces = traces.copy()    # 用于计算 median 和 centered 的“原始基准”
-    new_traces  = np.array(orig_traces, copy=True)  # 写输出
+    orig_traces = traces.copy()    # original baseline used for median/centered calculations
+    new_traces  = np.array(orig_traces, copy=True)  # output buffer
 
     good_channels = [ch for ch in range(n_channels) if ch not in Bad_Ch_Idx]
     total_channels = len(good_channels)
 
     # ---------------------------
-    # A) 清洗 stim_timestamps
+    # A) Clean stim_timestamps
     # ---------------------------
     ts_raw = np.asarray(stim_timestamps).reshape(-1)
     ts_raw = ts_raw[np.isfinite(ts_raw)]
@@ -199,7 +207,7 @@ def remove_polynomial_trend_serial(
             channel_ids=rec_obj.get_channel_ids()
         )
         new_rec.set_probe(Probe, in_place=True)
-        # 可选展示 probe
+        # Optionally display the probe
         probe_rec = new_rec.get_probe()
         df_probe = probe_rec.to_dataframe(complete=True)[
             ["contact_ids", "device_channel_indices"]
@@ -209,7 +217,7 @@ def remove_polynomial_trend_serial(
         return new_rec
 
     # ---------------------------
-    # B) 预计算：定位“第一个非零”的前一处全零
+    # B) Precompute: locate the zero immediately before the first nonzero sample
     # ---------------------------
     zero_all = np.all(orig_traces == 0, axis=1)  # (n_samples,)
     first_nonzero_idx_from = np.empty(n_samples, dtype=np.int64)
@@ -220,10 +228,10 @@ def remove_polynomial_trend_serial(
         first_nonzero_idx_from[i] = next_idx
 
     # ---------------------------
-    # C) 相邻事件对与粗过滤
+    # C) Adjacent event pairs and coarse filtering
     # ---------------------------
     min_points = max(order + 1, 8)
-    safety_margin = 3  # 与历史逻辑保持一致
+    safety_margin = 3  # keep consistent with the historical logic
     dt = ts[1:] - ts[:-1]
     valid_pair_mask = dt > (min_points + safety_margin)
     num_pairs_total = ts.size - 1
@@ -239,21 +247,22 @@ def remove_polynomial_trend_serial(
     ts_right = ts[1:][valid_pair_mask]
 
     # ---------------------------
-    # D) 主循环（按片段，再按通道）
+    # D) Main loop (iterate by segment, then by channel)
     # ---------------------------
     start_time_loop = time.time()
     print(f"[TrendRemoval] Start processing: {total_channels} channels, "
           f"{num_pairs_total} adjacent pairs ({num_pairs_valid} valid by interval).")
 
     for pair_idx, (ts_l, ts_r) in enumerate(zip(ts_left, ts_right), start=1):
-        # 终点：next_ts - 3（右端不包含）
+        # End point: next_ts - 3 (right edge not included)
         end_sample = int(ts_r) #- safety_margin
         if end_sample <= 0:
             skipped_oob += 1
             continue
         end_sample = min(n_samples, end_sample)
 
-        # 起点：从 ts_l 起向后找到第一个非零样本的前一位（最后一个全零点，且包含）
+        # Start point: from ts_l, find the sample immediately before the
+        # first nonzero sample (the last all-zero point, inclusive)
         j = first_nonzero_idx_from[ts_l]
         if j == -1 or j >= end_sample:
             start_sample = int(ts_l)
@@ -273,17 +282,17 @@ def remove_polynomial_trend_serial(
             skipped_too_few_pts += 1
             continue
 
-        # ---- 逐样本中位数（以原始信号为基准）----
+        # ---- Per-sample median (using the original signal as reference) ----
         # shape: (seg_len,)
         segment_block_raw = orig_traces[start_sample:end_sample, good_channels]  # (m, Cg)
         median_vec = np.median(segment_block_raw, axis=1)  # (m,)
 
         x = np.arange(seg_len)
 
-        # ---- 每个 good channel：centered 拟合并去趋势 ----
+        # ---- For each good channel: fit and detrend the centered segment ----
         for ch in good_channels:
-            raw_segment = orig_traces[start_sample:end_sample, ch]     # 原始段（仅用于构造 centered 与边界参照）
-            centered    = raw_segment - median_vec                     # 按你的要求：先扣中位数
+            raw_segment = orig_traces[start_sample:end_sample, ch]     # original segment, used for centered values and boundary reference
+            centered    = raw_segment - median_vec                     # per request: subtract the median first
 
             if centered.size < (order + 1):
                 skipped_too_few_pts += 1
@@ -298,15 +307,16 @@ def remove_polynomial_trend_serial(
 
             seg_new = centered - trend
 
-            # 边界保持：端点恢复为“扣中位数后的原值”（即 centered 的端点）
+            # Preserve boundaries: restore endpoints to the original
+            # median-subtracted values (the endpoints of `centered`)
             seg_new[0]  = centered[0]
             seg_new[-1] = centered[-1]
 
-            # 写回输出（保存的是“已扣中位数且去趋势”的结果）
+            # Write back the "median-subtracted and detrended" result
             new_traces[start_sample:end_sample, ch] = seg_new
             used_segments_total += 1
 
-        # 进度打印
+        # Progress print
         if pair_idx % 1000 == 0 or pair_idx == num_pairs_valid:
             print(f"Trend subtraction (serial, centered->fit->remove) "
                   f"pair {pair_idx}/{num_pairs_valid}", end='\r')
@@ -315,7 +325,7 @@ def remove_polynomial_trend_serial(
     elapsed = time.time() - start_time_loop
 
     # ---------------------------
-    # E) 统计总结
+    # E) Summary statistics
     # ---------------------------
     print("[TrendRemoval] Summary (centered->fit->remove):")
     print(f"  Channels processed: {total_channels} (skipped {len(Bad_Ch_Idx)})")
@@ -335,7 +345,7 @@ def remove_polynomial_trend_serial(
               "(3) 时间戳单位不是 '样本'；请检查 stim_timestamps 与 fs 的单位与范围。")
 
     # ---------------------------
-    # F) 构造新的 Recording 对象
+    # F) Construct the new Recording object
     # ---------------------------
     new_rec = si.NumpyRecording(
         new_traces,
@@ -355,15 +365,15 @@ def remove_polynomial_trend_serial(
 
 
 def rec_visualize(rec_obj, start_time, end_time):
-    # Customized parameters：选择一段数据进行可视化验证
-    start_time_param = start_time #145.16     # 起始时间（秒）
-    end_time_param = end_time #145.26      # 结束时间（秒）
-    channel_start = 6           # 起始通道索引（从0开始）
-    channel_end = 12           # 结束通道索引（包含）
+    # Customized parameters: select a data segment for visualization checks
+    start_time_param = start_time #145.16     # start time (s)
+    end_time_param = end_time #145.26      # end time (s)
+    channel_start = 6           # starting channel index (0-based)
+    channel_end = 12           # ending channel index (inclusive)
     
     rec_obj
     
-    # 转换为样本索引
+    # Convert to sample indices
     fs = rec_obj.get_sampling_frequency()
     start_sample = int(start_time_param * fs)
     end_sample = int(end_time_param * fs)
@@ -371,7 +381,7 @@ def rec_visualize(rec_obj, start_time, end_time):
     end_sample = min(rec_obj.get_num_samples(), end_sample)
     channel_end = min(channel_end, rec_obj.get_num_channels()-1)
     
-    # 获取选定通道及数据
+    # Get the selected channels and data
     segment_channel_ids = rec_obj.get_channel_ids()[channel_start : channel_end+1]
     traces = rec_obj.get_traces(
         channel_ids=segment_channel_ids,
@@ -380,7 +390,7 @@ def rec_visualize(rec_obj, start_time, end_time):
     )
     time_axis = np.linspace(start_time_param, end_time_param, traces.shape[0])
     
-    # 绘图展示选定数据段
+    # Plot the selected data segment
     fig, axes = plt.subplots(len(segment_channel_ids), 1, 
                              figsize=(12, 2*len(segment_channel_ids)),
                              sharex=True)
@@ -413,7 +423,7 @@ def generate_rec_piece4test(rec_complete, piece_T_start, piece_T_end):
     signals_subset = shank_signals
     fs = rec_complete.get_sampling_frequency()
     
-    # 创建新的 rec 对象
+    # Create a new recording object
     rec4test = si.NumpyRecording(
         signals_subset[int(fs*piece_T_start):int(fs*piece_T_end)],
         sampling_frequency=fs,
@@ -423,11 +433,11 @@ def generate_rec_piece4test(rec_complete, piece_T_start, piece_T_end):
     print("Recording object for test generated.")
     
     
-    # 设置 probe 信息
+    # Set probe information
     probe = rec_complete.get_probe()
     rec4test.set_probe(probe, in_place=True)
     probe_rec = rec4test.get_probe()
-    # 显示 probe 信息（可选）
+    # Display probe information (optional)
     df_probe = probe_rec.to_dataframe(complete=True).loc[:, ["contact_ids", "device_channel_indices"]]
     print(df_probe)
     
@@ -497,47 +507,50 @@ def extract_sorted_ts_from_mat(folder: str,
                                filename: str,
                                cell_var: str = None) -> np.ndarray:
     """
-    从指定文件夹中的 .mat 文件读取一个 C×2 的 cell 数组，
-    忽略第一列标签，提取第二列的所有数值并按升序排序返回。
+    Read a Cx2 cell array from a .mat file in the specified folder,
+    ignore the first-column labels, extract all numeric values from the
+    second column, and return them in ascending order.
 
     Parameters
     ----------
     folder : str
-        存放 .mat 文件的文件夹路径
+        Path to the folder containing the .mat file.
     filename : str
-        要读取的 .mat 文件名（含扩展名）
+        Name of the .mat file to read, including the extension.
     cell_var : str, optional
-        .mat 文件中 cell 数组变量的名称。如果为 None，则自动
-        使用文件里第一个非 '___' 开头的变量名。
+        Name of the cell-array variable in the .mat file. If None,
+        automatically use the first variable whose name does not start
+        with '__'.
 
     Returns
     -------
     ts : np.ndarray
-        排序后的所有值组成的一维 NumPy 数组
+        One-dimensional NumPy array containing all extracted values,
+        sorted in ascending order.
     """
-    # 构造并检查路径
+    # Construct and validate the path
     filepath = os.path.join(folder, filename)
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f".mat 文件未找到: {filepath}")
 
-    # 加载 .mat，去掉单维度包装
+    # Load the .mat file and remove singleton dimensions
     mat = sio.loadmat(filepath, squeeze_me=True, struct_as_record=False)
-    # 自动选取变量名
+    # Automatically choose the variable name
     if cell_var is None:
         vars_in_mat = [k for k in mat.keys() if not k.startswith('__')]
         if not vars_in_mat:
             raise KeyError("在 .mat 文件中未找到任何变量。")
         cell_var = vars_in_mat[0]
 
-    # 提取 cell 数组
+    # Extract the cell array
     cell_array = mat[cell_var]
     cell_array = np.asarray(cell_array)
     if cell_array.ndim != 2 or cell_array.shape[1] < 2:
         raise ValueError(f"变量 '{cell_var}' 不是形如 C×2 的 cell 数组。")
 
-    # 抽取第二列，每个元素应是 N×1 的 double 数组
+    # Extract the second column; each element should be an Nx1 double array
     second_col = cell_array[:, 1]
-    # 合并并排序
+    # Concatenate and sort
     ts = np.concatenate([np.asarray(arr).flatten() for arr in second_col])
     ts = np.sort(ts)
 
@@ -553,37 +566,49 @@ def remove_hpf_trend_serial(
     subtract_median: bool = True,
     cutoff_hz: float = 1.0,
     filter_order: int = 3,
-    safety_margin: int | None = None,   # 新：默认 None => 用 [ts_l, ts_r] 闭区间
-    sampling_rate: float | None = None, # 显式采样率（Hz）；None 则从 rec_obj 获取
+    safety_margin: int | None = None,   # New: default None => use the closed interval [ts_l, ts_r]
+    sampling_rate: float | None = None, # Explicit sampling rate (Hz); if None, read from rec_obj
 ):
     """
-    串行：用高通滤波替代 polynomial 去趋势；支持“闭区间”片段模式与端点强制为 0。
+    Serial version: replace polynomial detrending with a high-pass filter.
+    Supports a "closed interval" segment mode and forces segment endpoints
+    to zero.
 
-    片段定义（ts_l = 当前刺激，ts_r = 下一个刺激）：
-      - 若 safety_margin is None:
-            segment = [ts_l, ts_r] （闭区间；切片需用 end_excl = ts_r + 1）
-            起点=ts_l（不再做“第一个非零的前一位”探测）
-      - 若 safety_margin 是整数:
-            end_excl = max(0, ts_r - safety_margin)（右端不含）
-            起点按旧逻辑：从 ts_l 向后找到“第一个非零”的**前一位**（最后一个全零），若直到 end_excl 前都为零则用 ts_l
+    Segment definition (`ts_l` = current stimulus, `ts_r` = next stimulus):
+      - If `safety_margin is None`:
+            segment = [ts_l, ts_r] (closed interval; slicing uses
+            `end_excl = ts_r + 1`)
+            start = `ts_l` (no longer searches for the sample immediately
+            before the first nonzero sample)
+      - If `safety_margin` is an integer:
+            `end_excl = max(0, ts_r - safety_margin)` (right edge excluded)
+            start follows the legacy logic: from `ts_l`, find the sample
+            immediately before the first nonzero value (the last all-zero
+            sample). If everything remains zero before `end_excl`, use `ts_l`.
 
-    信号处理：
-      - 可选 subtract_median=True：段内对所有 good channels 逐样本取中位并先扣除
-      - 对每个通道片段做 Butterworth 高通（零相位 filtfilt）
-      - 端点处理（关键新要求）：
-            不论是否扣中位，滤波完成后把该片段的首样本与尾样本 **强制置为 0**
-            （因为物理上每个刺激点处所有通道都是 0）
+    Signal processing:
+      - Optional `subtract_median=True`: compute the per-sample median across
+        all good channels within each segment and subtract it first
+      - Apply a Butterworth high-pass filter to each channel segment using
+        zero-phase `filtfilt`
+      - Endpoint handling (key new requirement):
+            regardless of median subtraction, force the first and last sample
+            of the filtered segment to 0
+            (because physically all channels are 0 at each stimulation point)
 
-    参数
-    ----
-    subtract_median : 是否先做跨 good channels 的逐样本中位数扣除（工作域变为“扣中位后的信号”）
-    cutoff_hz       : 高通截止频率（物理 Hz）
-    filter_order    : Butterworth 阶数（建议 2–4）
-    safety_margin   : None=闭区间；整数=相对下个刺激点保留 margin 的旧模式
-    sampling_rate   : 采样率 Hz；None 则用 rec_obj.get_sampling_frequency()
+    Parameters
+    ----------
+    subtract_median : Whether to subtract the per-sample median across good
+        channels first (so processing happens on the median-subtracted signal)
+    cutoff_hz : High-pass cutoff frequency in physical Hz
+    filter_order : Butterworth filter order (2-4 recommended)
+    safety_margin : `None` for closed-interval mode; integer for the legacy
+        mode that leaves a margin before the next stimulus
+    sampling_rate : Sampling rate in Hz; if None, use
+        `rec_obj.get_sampling_frequency()`
 
-    返回
-    ----
+    Returns
+    -------
     spikeinterface.NumpyRecording
     """
     import numpy as np
@@ -594,7 +619,7 @@ def remove_hpf_trend_serial(
     if Bad_Ch_Idx is None:
         Bad_Ch_Idx = []
 
-    # 0) 采样率 / 基本数据
+    # 0) Sampling rate / basic data
     fs = float(sampling_rate) if sampling_rate is not None else float(rec_obj.get_sampling_frequency())
     if not np.isfinite(fs) or fs <= 0:
         raise ValueError(f"无效采样率 fs={fs}")
@@ -616,7 +641,7 @@ def remove_hpf_trend_serial(
         return new_rec
     total_channels = len(good_channels)
 
-    # 1) 清洗时间戳
+    # 1) Clean timestamps
     ts_raw = np.asarray(stim_timestamps).reshape(-1)
     ts_raw = ts_raw[np.isfinite(ts_raw)]
     ts = ts_raw.astype(np.int64, copy=False)
@@ -629,7 +654,8 @@ def remove_hpf_trend_serial(
         new_rec.set_probe(Probe, in_place=True)
         return new_rec
 
-    # 2) 若使用“旧模式”（safety_margin 为整数），需要“第一个非零”的辅助表
+    # 2) If using the legacy mode (`safety_margin` is an integer),
+    #    build the lookup table for the first nonzero sample
     if safety_margin is not None:
         zero_all = np.all(orig_traces == 0, axis=1)  # (n_samples,)
         first_nonzero_idx_from = np.empty(n_samples, dtype=np.int64)
@@ -639,17 +665,17 @@ def remove_hpf_trend_serial(
                 next_idx = i
             first_nonzero_idx_from[i] = next_idx
     else:
-        first_nonzero_idx_from = None  # 不使用
+        first_nonzero_idx_from = None  # not used
 
-    # 3) 设计高通滤波器
+    # 3) Design the high-pass filter
     nyq = fs / 2.0
     wn = float(cutoff_hz) / nyq
     if not (0 < wn < 1):
         raise ValueError(f"cutoff_hz 必须在 (0, {nyq}) 内，当前 {cutoff_hz}")
     b, a = butter(filter_order, wn, btype="highpass")
-    padlen_const = 3 * (max(len(a), len(b)) - 1)  # filtfilt 的理论最小长度
+    padlen_const = 3 * (max(len(a), len(b)) - 1)  # theoretical minimum length for filtfilt
 
-    # 4) 统计
+    # 4) Statistics
     num_pairs_total = ts.size - 1
     skipped_short_coarse = 0
     skipped_oob        = 0
@@ -663,17 +689,19 @@ def remove_hpf_trend_serial(
           f"fs={fs:.3f}Hz, cutoff={cutoff_hz}Hz, order={filter_order}, "
           f"subtract_median={subtract_median}, mode={mode_str}")
 
-    # 5) 主循环
+    # 5) Main loop
     for pair_idx in range(num_pairs_total):
         ts_l = int(ts[pair_idx])
         ts_r = int(ts[pair_idx + 1])
 
         if safety_margin is None:
-            # 闭区间：[ts_l, ts_r] => 切片右端需要 +1
+            # Closed interval: [ts_l, ts_r] => slicing needs a +1 right edge
             start_sample = ts_l
             end_excl     = ts_r + 1
         else:
-            # 旧模式：右端留 margin；起点为“第一个非零的前一位”，若一直为零则用 ts_l
+            # Legacy mode: leave a right-edge margin; start from the sample
+            # immediately before the first nonzero one, or use ts_l if all
+            # samples remain zero
             end_excl = int(ts_r) - int(safety_margin)
             if end_excl <= 0:
                 skipped_oob += 1
@@ -684,9 +712,9 @@ def remove_hpf_trend_serial(
             if j == -1 or j >= end_excl:
                 start_sample = ts_l
             else:
-                start_sample = max(0, j - 1)  # 最后一个全零（包含）
+                start_sample = max(0, j - 1)  # last all-zero sample (inclusive)
 
-        # 基本边界
+        # Basic bounds
         if start_sample < 0:
             start_sample = 0
         if end_excl > n_samples:
@@ -697,29 +725,30 @@ def remove_hpf_trend_serial(
             skipped_reversed += 1
             continue
 
-        # 粗过滤（仅在 None 模式下也给个最小长度门槛；严格门槛用 padlen）
+        # Coarse filtering (even in None mode, enforce a minimum length;
+        # strict filtering uses padlen)
         if seg_len <= 8:
             skipped_short_coarse += 1
             continue
 
-        # 严格长度检查：必须能 filtfilt
+        # Strict length check: must be long enough for filtfilt
         if seg_len <= padlen_const:
             skipped_too_short += 1
             continue
 
-        # 构造段矩阵（原始）
+        # Build the segment matrix (original signal)
         seg_block_raw = orig_traces[start_sample:end_excl, good_channels]  # (m, Cg)
 
-        # 逐样本中位数（可选）
+        # Per-sample median (optional)
         if subtract_median:
             median_vec = np.median(seg_block_raw, axis=1)  # (m,)
         else:
             median_vec = 0.0
 
-        # 滤波与端点处理
+        # Filtering and endpoint handling
         for ch in good_channels:
             raw_seg = orig_traces[start_sample:end_excl, ch]
-            y = raw_seg - median_vec  # 若未扣中位，相当于 y=raw_seg
+            y = raw_seg - median_vec  # if median subtraction is disabled, this is equivalent to y=raw_seg
 
             try:
                 y_hp = filtfilt(b, a, y, padlen=padlen_const)
@@ -727,22 +756,24 @@ def remove_hpf_trend_serial(
                 skipped_too_short += 1
                 continue
 
-            # 线性“形状修正”可省略（端点将被强制置 0）
-            # 把片段两端样本强制置为 0（满足物理假设：每个刺激点处为 0）
+            # Linear shape correction can be skipped because the endpoints
+            # will be forced to zero
+            # Force the two segment endpoints to zero to match the physical
+            # assumption that every stimulation point is zero
             y_hp[0]  = 0.0
             y_hp[-1] = 0.0
 
             new_traces[start_sample:end_excl, ch] = y_hp
             used_segments_total += 1
 
-        # 进度
+        # Progress
         if (pair_idx + 1) % 10 == 0 or (pair_idx + 1) == num_pairs_total:
             print(f"[HPFTrend] pair {pair_idx + 1}/{num_pairs_total}", end='\r')
 
     print()
     elapsed = time.time() - start_time
 
-    # 6) 总结
+    # 6) Summary
     print("[HPFTrend] Summary:")
     print(f"  Channels processed: {total_channels} (skipped {len(Bad_Ch_Idx)})")
     print(f"  Adjacent pairs total: {num_pairs_total}")
@@ -758,7 +789,7 @@ def remove_hpf_trend_serial(
         print("[HPFTrend] WARNING: 没有任何片段被使用。可能原因：相邻间隔过短、cutoff 过低导致 pad 较大、"
               "或时间戳单位/范围异常。")
 
-    # 7) 返回 Recording
+    # 7) Return the Recording
     new_rec = si.NumpyRecording(
         new_traces,
         sampling_frequency=fs,
@@ -778,7 +809,7 @@ print(matplotlib.get_backend())
 # Use interactive GUI backend only if not already set
 if matplotlib.get_backend() not in ['TkAgg', 'Qt5Agg', 'QtAgg']:
     try:
-        matplotlib.use('Qt5Agg')  # 或根据你系统支持设置 'TkAgg'
+        matplotlib.use('Qt5Agg')  # or use 'TkAgg' depending on your system support
     except Exception as e:
         print("Warning: Could not set interactive backend:", e)
 
@@ -900,27 +931,33 @@ def label_bad_ch_from_rec(
 
 def prune_by_spacing(arr: np.ndarray, min_gap: int) -> np.ndarray:
     """
-    从已排序的一维 int32 数组中删除相邻间距不足 min_gap 的较小元素。
-    规则：若 x[i] 与前一个保留元素的差 < min_gap，则删除较小者（即前一个），保留较大者（当前）。
-    
-    参数
-    ----
-    arr : np.ndarray
-        形状为 (N,) 的已升序排序数组；建议 dtype 为 int32。
-    min_gap : int
-        最小允许间距（严格：仅当差值 < min_gap 时触发删除；== min_gap 视为合格）。
+    Remove the smaller element from adjacent entries in a sorted 1D int32
+    array whenever their spacing is smaller than `min_gap`.
 
-    返回
-    ----
+    Rule: if `x[i] - previous_kept < min_gap`, remove the smaller value
+    (the previously kept one) and keep the larger value (the current one).
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Sorted array of shape (N,); `int32` is recommended.
+    min_gap : int
+        Minimum allowed spacing. The condition is strict:
+        removal happens only when the difference is `< min_gap`;
+        `== min_gap` is considered acceptable.
+
+    Returns
+    -------
     np.ndarray
-        处理后的数组，dtype 与输入一致。
+        Processed array with the same dtype as the input.
     """
     if arr.ndim != 1:
         raise ValueError("arr 必须是一维数组")
     if len(arr) <= 1:
         return arr.astype(np.int32, copy=True)
 
-    # 用 list 做栈保存结果，必要时删除倒数第二个元素（较小者）
+    # Use a list as a stack to store results and, when needed,
+    # remove the second-to-last element (the smaller one)
     out = []
     for x in arr:
         if not out:
@@ -928,15 +965,16 @@ def prune_by_spacing(arr: np.ndarray, min_gap: int) -> np.ndarray:
             continue
 
         if x - out[-1] >= min_gap:
-            # 与最后一个保留值间距足够，直接保留
+            # Far enough from the last kept value, so keep it directly
             out.append(int(x))
         else:
-            # 间距不足：按规则删除较小者（当前 pair 中的较小是 out[-1]）
-            # 用 x 替换 out[-1]
+            # Spacing is too small: remove the smaller value according to the
+            # rule (in the current pair, that smaller value is out[-1])
+            # Replace out[-1] with x
             out[-1] = int(x)
-            # 可能与更早的值也间距不足，需要继续向前清理
+            # It may also be too close to earlier values, so keep cleaning backward
             while len(out) >= 2 and (out[-1] - out[-2] < min_gap):
-                # 删除较小者 out[-2]，保留较大者 out[-1]
+                # Remove the smaller value out[-2] and keep the larger out[-1]
                 del out[-2]
 
     return np.asarray(out, dtype=arr.dtype)
@@ -958,27 +996,34 @@ def zero_bridge_filter(
     save_folder: str | Path | None = None,
     debug: bool = True,
     Complete_data: bool = True,
-    n_jobs: int = 1,               # 按 channel 并行
-    Sign_Detection: bool = False,  # 是否启用“变号点”伪零点逻辑
+    n_jobs: int = 1,               # parallelize by channel
+    Sign_Detection: bool = False,  # whether to enable sign-change pseudo-zero logic
 ):
     """
-    对 T*N 的 trace 做“零点 / 变号桥接”操作：
-      - Bad_Channel_Indexes 中的 channel 不做任何修改。
-      - 对其它 channel:
-        1) 检查 Stim_Onset_Ts 位置是否为 0，不是则报错。
-        2) 找出所有连续 0 段，并标记其中“包含 stim”的 0 段。
-        3) 对包含 stim 的 0 段，去掉其内部 0，只保留端点 0（zero_idx_valid）。
-        4) 对每个 stim 的 pre/post 窗口：
-           - 基于 zero_idx_valid 找窗口内 0 点；
-           - 若 Sign_Detection=True，则额外在窗口内找“变号点”（信号从正到负或负到正，
-             且不在连续零段内），也当作“伪零点”。
-        5) 将所有零点/伪零点排序，相邻两个点间距 < Width_Filter_Threshold，则在该区间内置 0。
+    Apply "zero-point / sign-change bridging" to a T*N trace array:
+      - Channels in `Bad_Channel_Indexes` are left unchanged.
+      - For all other channels:
+        1) Check whether each `Stim_Onset_Ts` location equals 0; raise an
+           error otherwise.
+        2) Find all consecutive zero segments and mark those that contain a
+           stimulation point.
+        3) For zero segments that contain a stimulation point, remove the
+           interior zeros and keep only the endpoint zeros (`zero_idx_valid`).
+        4) For the pre/post window around each stimulation point:
+           - find zero points in the window using `zero_idx_valid`
+           - if `Sign_Detection=True`, also find sign-change points in the
+             window (signal goes positive-to-negative or negative-to-positive,
+             and is not inside a continuous zero segment) and treat them as
+             "pseudo-zero" points
+        5) Sort all zero/pseudo-zero points; if the spacing between two
+           adjacent points is < `Width_Filter_Threshold`, set that interval
+           to zero.
 
-    返回：
-      new_trace_data: 形状与 orig_trace_data 相同的新数组
+    Returns:
+      new_trace_data: new array with the same shape as `orig_trace_data`
     """
 
-    # ========== 基本检查 ==========
+    # ========== Basic checks ==========
     if not isinstance(orig_trace_data, np.ndarray):
         raise TypeError("orig_trace_data 必须是 numpy.ndarray")
 
@@ -1000,7 +1045,7 @@ def zero_bridge_filter(
     if Stim_Onset_Ts.size == 0:
         raise ValueError("Stim_Onset_Ts 为空，无法执行操作。")
 
-    # 处理 Complete_data 情况下的越界 stim
+    # Handle out-of-range stim indices depending on Complete_data
     if Complete_data:
         if np.any(Stim_Onset_Ts < 0) or np.any(Stim_Onset_Ts >= T):
             raise ValueError(
@@ -1023,7 +1068,7 @@ def zero_bridge_filter(
         else:
             Stim_valid = Stim_Onset_Ts
 
-    # Bad channel 检查
+    # Bad channel validation
     Bad_Channel_Indexes = set(int(i) for i in Bad_Channel_Indexes)
     for ch in Bad_Channel_Indexes:
         if ch < 0 or ch >= N:
@@ -1042,12 +1087,13 @@ def zero_bridge_filter(
     new_trace_data = orig_trace_data.copy()
     modifications = []  # (ch, seg_start, seg_end)
 
-    # ========== 单个 channel 的处理逻辑（可并行） ==========
+    # ========== Per-channel processing logic (parallelizable) ==========
     def _process_one_channel(ch: int):
         """
-        返回: (ch_idx, new_trace_ch, channel_mods)
+        Returns: (ch_idx, new_trace_ch, channel_mods)
           - new_trace_ch: shape (T,)
-          - channel_mods: [(seg_start, seg_end), ...] 该 channel 内的置 0 片段
+          - channel_mods: [(seg_start, seg_end), ...] zeroed segments
+            within this channel
         """
         if ch in Bad_Channel_Indexes:
             if debug:
@@ -1056,7 +1102,7 @@ def zero_bridge_filter(
 
         trace = orig_trace_data[:, ch]
 
-        # Step 3: 检查 Stim 点是否为 0
+        # Step 3: verify that the stim points are zero
         stim_vals = trace[Stim_valid]
         non_zero_mask = stim_vals != 0
         if np.any(non_zero_mask):
@@ -1068,23 +1114,23 @@ def zero_bridge_filter(
                 f"例如 index={example_idx}, value={example_val}。"
             )
 
-        # 所有为 0 的索引
+        # All indices where the value is zero
         zero_idx = np.flatnonzero(trace == 0)
         if zero_idx.size == 0:
             if debug:
                 print(f"[Channel {ch}] 该通道没有任何 0 点，跳过宽度过滤。")
             return ch, trace.copy(), []
 
-        # === 使用 zero_idx 找所有连续 0 段 ===
+        # === Use zero_idx to find all consecutive zero segments ===
         diff = np.diff(zero_idx)
         seg_zero_start_idx = np.concatenate(([0], np.nonzero(diff > 1)[0] + 1))
         seg_zero_end_idx   = np.concatenate((np.nonzero(diff > 1)[0], [zero_idx.size - 1]))
 
-        seg_start_val = zero_idx[seg_zero_start_idx]  # 每段连续 0 的第一个 0 索引
-        seg_end_val   = zero_idx[seg_zero_end_idx]    # 每段连续 0 的最后一个 0 索引
+        seg_start_val = zero_idx[seg_zero_start_idx]  # first zero index of each consecutive zero segment
+        seg_end_val   = zero_idx[seg_zero_end_idx]    # last zero index of each consecutive zero segment
         num_segs = seg_start_val.size
 
-        # 标记哪些 0 段包含至少一个 stim
+        # Mark which zero segments contain at least one stim
         seg_has_stim = np.zeros(num_segs, dtype=bool)
         for stim_idx in Stim_valid:
             if stim_idx < 0 or stim_idx >= T:
@@ -1093,14 +1139,16 @@ def zero_bridge_filter(
             if k >= 0 and stim_idx <= seg_end_val[k]:
                 seg_has_stim[k] = True
 
-        # 去掉“包含 stim 的 0 段”的内部 0（保留端点）
+        # Remove interior zeros from zero segments that contain a stim,
+        # while keeping the endpoints
         interior_mask = np.zeros(zero_idx.size, dtype=bool)
         interest_seg_ids = np.nonzero(seg_has_stim)[0]
         for j in interest_seg_ids:
             s_idx = seg_zero_start_idx[j]
             e_idx = seg_zero_end_idx[j]
             if e_idx - s_idx >= 2:
-                # s_idx+1 : e_idx-1 是内部；注意 e_idx 是最后一个 zero 的索引
+                # s_idx+1 : e_idx-1 is the interior; note that e_idx is the
+                # index of the last zero
                 interior_mask[s_idx + 1:e_idx] = True
 
         zero_idx_valid = zero_idx[~interior_mask]
@@ -1115,22 +1163,26 @@ def zero_bridge_filter(
                 print(f"[Channel {ch}] 去掉连续 0 段内部后没有可用 0 点，且未启用 Sign_Detection，跳过该通道。")
             return ch, trace.copy(), []
 
-        # 若启用 Sign_Detection，则预先计算：
-        #   1) in_zero_segment: 哪些 sample 在任何连续零段内（包括端点）
-        #   2) sign_change_idx_all: 所有“符号从正变负或负变正”的位置（且两侧都非 0）
+        # If Sign_Detection is enabled, precompute:
+        #   1) in_zero_segment: which samples lie inside any continuous zero
+        #      segment (including endpoints)
+        #   2) sign_change_idx_all: all positions where the sign changes from
+        #      positive to negative or vice versa, with both sides nonzero
         if Sign_Detection:
             in_zero_segment = np.zeros(T, dtype=bool)
             for s_val, e_val in zip(seg_start_val, seg_end_val):
                 in_zero_segment[s_val:e_val + 1] = True
 
-            # 用 int8 存符号：-1, 0, 1，避免 int64 的巨大内存
+            # Store signs as int8 (-1, 0, 1) to avoid the larger memory
+            # footprint of int64
             nonzero_mask_trace = trace != 0
 
             sign_trace = np.zeros(T, dtype=np.int8)
             sign_trace[trace > 0] = 1
             sign_trace[trace < 0] = -1
 
-            # 相邻符号乘积 < 0 且两端都非 0 → 真正变号点（非 0 ↔ 非 0）
+            # Adjacent sign product < 0 and both endpoints nonzero
+            # -> a true sign-change point (nonzero <-> nonzero)
             sign_prod = sign_trace[1:] * sign_trace[:-1]  # int8 即可
             sc_mask = (sign_prod < 0) & nonzero_mask_trace[1:] & nonzero_mask_trace[:-1]
             sign_change_idx_all = np.flatnonzero(sc_mask) + 1
@@ -1141,7 +1193,8 @@ def zero_bridge_filter(
             in_zero_segment = None
             sign_change_idx_all = None
 
-        # Step 5: 对每个 stim 的窗口，收集候选“零点”（真实 0 或伪零点）
+        # Step 5: for each stim window, collect candidate "zero points"
+        # (true zeros or pseudo-zeros)
         zero_positions_set = set()
 
         for stim_idx in Stim_valid:
@@ -1150,7 +1203,7 @@ def zero_bridge_filter(
             if win_end < win_start:
                 continue
 
-            # (1) 窗口内的真实 0 点（zero_idx_valid）
+            # (1) True zero points inside the window (zero_idx_valid)
             if zero_idx_valid.size > 0:
                 l = np.searchsorted(zero_idx_valid, win_start, side='left')
                 r = np.searchsorted(zero_idx_valid, win_end,   side='right')
@@ -1158,7 +1211,8 @@ def zero_bridge_filter(
                     for pos in zero_idx_valid[l:r]:
                         zero_positions_set.add(int(pos))
 
-            # (2) 若开启 Sign_Detection，再加入窗口内的“变号点”（视为伪零点）
+            # (2) If Sign_Detection is enabled, also include sign-change
+            # points inside the window as pseudo-zero points
             if Sign_Detection and sign_change_idx_all is not None and sign_change_idx_all.size > 0:
                 l2 = np.searchsorted(sign_change_idx_all, win_start, side='left')
                 r2 = np.searchsorted(sign_change_idx_all, win_end,   side='right')
@@ -1179,7 +1233,8 @@ def zero_bridge_filter(
         if debug:
             print(f"[Channel {ch}] 用于宽度过滤的候选点数量: {zero_positions.size}")
 
-        # Step 6: 相邻候选点间距 < 阈值 → 中间全置 0
+        # Step 6: if the spacing between adjacent candidate points is below
+        # the threshold, zero out the entire interval between them
         new_trace_ch = trace.copy()
         channel_mods = []
 
@@ -1197,7 +1252,7 @@ def zero_bridge_filter(
 
         return ch, new_trace_ch, channel_mods
 
-    # ========== 串行 / 并行执行 ==========
+    # ========== Serial / parallel execution ==========
     if n_jobs is None or n_jobs <= 1:
         for ch in range(N):
             ch_idx, new_ch, ch_mods = _process_one_channel(ch)
@@ -1217,7 +1272,7 @@ def zero_bridge_filter(
                 for (s, e) in ch_mods:
                     modifications.append((ch_idx, s, e))
 
-    # ========== 画 debug 对比图 ==========
+    # ========== Draw debug comparison plots ==========
     if save_folder is not None and len(modifications) > 0:
         save_folder = Path(save_folder)
         subfolder = save_folder / "zero_filter_debug_plots"
@@ -1330,7 +1385,8 @@ print(TotalDur)
 #%%
 
 
-# 定义各shank对应的Ripple通道号列表（按照深度y轴从0到高）
+# Define the Ripple channel lists for each shank
+# (ordered by depth along the y-axis from 0 upward)
 
  
 Ripple_id_Shank0 = [104,102,106,97,99,101,103,105,107,109,111,113,115,117,119,
@@ -1345,7 +1401,7 @@ Ripple_id_Shank2 = [63,1,4,64,2,12,56,10,14,34,36,20,46,22,44,54,3,61,57,62,6,
 Ripple_id_Shank3 = [59,5,55,53,51,49,47,45,43,41,39,37,35,30,40,33,7,9,11,13,
                     15,17,19,21,23,25,27,29,31,24,26,28]
 
-# 将所有TDT列表汇总到一个列表中，便于后续索引
+# Combine all Ripple lists into one list for easier downstream indexing
 #TDT_ids_all = [TDT_id_Shank0, TDT_id_Shank1, TDT_id_Shank2, TDT_id_Shank3]
 Ripple_ids_all = [Ripple_id_Shank0, Ripple_id_Shank1, Ripple_id_Shank2, Ripple_id_Shank3]
 
@@ -1354,7 +1410,7 @@ Ripple_ids_all = [Ripple_id_Shank0, Ripple_id_Shank1, Ripple_id_Shank2, Ripple_i
 
 
 #% Create a save folder for pipeline outputs
-# 创建保存文件夹并定义 ms5 参数
+# Create the output folder and define ms5 parameters
 current_date_string = datetime.now().strftime('%d-%b-%Y_%H%M')
 Mother_save_folder = os.path.join(data_folder, "Processed_" + current_date_string)
 os.makedirs(Mother_save_folder, exist_ok=True)
@@ -1409,10 +1465,11 @@ for count in range(2,4):
     os.makedirs(save_folder, exist_ok=True)
         
     print(f"Processing shank {shank} ...")
-    # 构造对应的 probe 文件路径，例如：'util/EBL4Shank/NET-EBL-4by32-TDT4Py-shank0.json'
+    # Construct the corresponding probe file path, for example:
+    # 'util/EBL4Shank/NET-EBL-4by32-TDT4Py-shank0.json'
     probe_filename = f'Z:/xl_stimulation/Yuxuan_NEW/Summation-since20230612/2025-Exp&Data/DataAnaCode/Ephys/EBL4Shank_Ripple&TDT_Yuxuan/2025_New_Pipeline/ChMap/Linear/NET-PL-4by32linear-Depth4Py-1shank.json'
     
-    # 读取 probe 文件
+    # Read the probe file
     pi = read_probeinterface(probe_filename)
     probe = pi.probes[0]
     
@@ -1421,10 +1478,10 @@ for count in range(2,4):
     shank_channel_indices = [idx for idx in current_Ripple_ids]
     shank_channel_ids = [str(ch) for ch in shank_channel_indices]   
                          
-    start_time = 0      # 起始时间（秒）
-    end_time =  1200 #TotalDur       # 结束时间（秒）
+    start_time = 0      # start time (s)
+    end_time =  1200 #TotalDur       # end time (s)
 
-    # 转换为样本索引
+    # Convert to sample indices
 
     #EndFrame = int(fs*TotalDur)
     total_duration = rec_all.get_total_duration()
@@ -1442,7 +1499,7 @@ for count in range(2,4):
     channel_ids = rec_all.get_channel_ids()
     channel_ids_subset = channel_ids[0:32]
     
-    #% 创建新的 rec 对象
+    #% Create a new recording object
     rec = si.NumpyRecording(
         signals_subset,
         sampling_frequency=sampling_freq,
@@ -1450,16 +1507,16 @@ for count in range(2,4):
     )
     
     #%
-    # 设置 probe 信息
+    # Set probe information
     rec.set_probe(probe, in_place=True)
     probe_rec = rec.get_probe()
-    # 显示 probe 信息（可选）
+    # Display probe information (optional)
     df_probe = probe_rec.to_dataframe(complete=True).loc[:, ["contact_ids", "device_channel_indices"]]
     print(df_probe)
     
     fs = rec.get_sampling_frequency()
     
-    # 验证输出
+    # Validate the output
     print("== Data Successfully Loaded ==")
     print("If loading probe successful?", rec.has_probe())
     print("Recording object:", rec)
@@ -1514,8 +1571,8 @@ for count in range(2,4):
     #     subtract_median = False,
     #     cutoff_hz = 300.0,
     #     filter_order = 5,
-    #     safety_margin = 0   # 终点：end_sample = next_ts - safety_margin（右端不含）
-    #     #sampling_rate: float | None = None,  # 显式指定采样率（Hz）；None 则从 rec_obj 获取
+    #     safety_margin = 0   # End point: end_sample = next_ts - safety_margin (right edge excluded)
+    #     #sampling_rate: float | None = None,  # Explicitly specify the sampling rate (Hz); if None, read it from rec_obj
     # )
     
     
@@ -1544,17 +1601,17 @@ for count in range(2,4):
 
     #%
     new_data = zero_bridge_filter(
-        orig_trace_data=orig_traces,         # 形状 (T, N)
-        Stim_Onset_Ts=stim_ts_sorted,            # 形状 (S,)
-        Bad_Channel_Indexes=Bad_ch_idx,#[0, 5, 7],          # 例如坏道
+        orig_trace_data=orig_traces,         # shape (T, N)
+        Stim_Onset_Ts=stim_ts_sorted,            # shape (S,)
+        Bad_Channel_Indexes=Bad_ch_idx,#[0, 5, 7],          # e.g. bad channels
         sampling_rate=30000,
         pre_stim_range=1.0,                     # ms
         post_stim_range=1.5,                    # ms
         Width_Filter_Threshold=30,              # samples
-        save_folder=save_folder,     # 会创建 zero_filter_debug_plots 子文件夹
+        save_folder=save_folder,     # will create the zero_filter_debug_plots subfolder
         debug=False,
         Complete_data=False,
-        n_jobs=4,               # 按 channel 并行
+        n_jobs=4,               # parallelize by channel
         Sign_Detection = True
     )
 
@@ -1704,7 +1761,8 @@ for count in range(2,4):
 
     
     
-    # 保存用于 waveform 提取的 rec（这里使用 common reference 后的 rec）
+    # Save the recording used for waveform extraction
+    # (here we use the common-referenced recording)
     rec_for_wvf_extraction = rec_preprocessed#rec_final_zeroed#rec7#rec_filt
     
     
@@ -1712,12 +1770,12 @@ for count in range(2,4):
 
     from spikeinterface.sorters import run_sorter_jobs
     
-    # --- 你的预处理 rec_preprocessed 已经准备好 ---
-    # 假设 rec_preprocessed 是一个 RecordingExtractor 对象
+    # --- Your preprocessed `rec_preprocessed` is ready ---
+    # Assume `rec_preprocessed` is a RecordingExtractor object
     
     
     
-    # Mountainsort5 的参数
+    # Mountainsort5 parameters
     ms5_params = {
         'scheme': '2',
         'detect_threshold': 5,
@@ -1730,14 +1788,15 @@ for count in range(2,4):
         'whiten': True
     }
     
-    # 保存为 sorter 兼容的二进制格式
+    # Save in a sorter-compatible binary format
     start = time.time()
     rec_bi_preprocessed = rec_preprocessed.save()
     print(f"Converted to sorter-compatible binary in {time.time() - start:.1f} s")
     
     
     #%
-    # 构建一个“作业列表”，即使只有一条 recording，也能并行拆任务
+    # Build a "job list"; even with only one recording, this keeps the
+    # interface compatible with parallel job execution
     job_list = [{
         'sorter_name': 'mountainsort5',
         'recording': rec_bi_preprocessed,
@@ -1747,13 +1806,13 @@ for count in range(2,4):
         **ms5_params
     }]
     
-    # 并行运行
+    # Run in parallel
     start = time.time()
     sortings = run_sorter_jobs(
         job_list=job_list,
         engine='joblib',
         engine_kwargs={
-            'n_jobs': 40,         # 使用 40 核
+            'n_jobs': 40,         # use 40 cores
             'mp_context': 'spawn',
             'prefer': 'processes'
         },
@@ -1761,7 +1820,7 @@ for count in range(2,4):
     )
     print(f"Total sorting time: {time.time() - start:.1f} s")
     
-    # run_sorter_jobs 返回一个列表，我们取第一个元素
+    # run_sorter_jobs returns a list; take the first element
     sorting = sortings[0]
     
     #sorting.save(folder=Path(save_folder) / 'sorting2')
@@ -1770,7 +1829,7 @@ for count in range(2,4):
         
     
     #%
-    #% 创建 sorting analyzer
+    #% Create the sorting analyzer
     start_time_analyzer = time.time()
     analyzer_folder = os.path.join(save_folder, "Analyzer_raw")
     analyzer = si.create_sorting_analyzer(sorting=sorting, 
@@ -1780,7 +1839,7 @@ for count in range(2,4):
     end_time_analyzer = time.time()
     print("Create sorting analyzer takes time (s):", end_time_analyzer - start_time_analyzer)
     
-    # 计算各种指标
+    # Compute various metrics
     analyzer.compute("random_spikes", method="uniform", max_spikes_per_unit=500)
     start_time_compute = time.time()
     analyzer.compute("waveforms", ms_before=1.0, ms_after=2.0)
@@ -1809,7 +1868,7 @@ for count in range(2,4):
     available_extension_names = analyzer.get_loaded_extension_names()
     print("Loaded extension names:", available_extension_names)
     
-    # 生成 SortingView 的 URL，并存入循环外的列表中
+    # Generate the SortingView URL and store it in the list outside the loop
     w_ss = spikeinterface.widgets.plot_sorting_summary(analyzer, 
                         min_similarity_for_correlograms=0.2, 
                         curation=True, 
@@ -1846,7 +1905,7 @@ for count in range(2,4):
 
 
 #%%
-# 循环结束后，依次打印所有生成的 URL
+# After the loop finishes, print all generated URLs
 print("Generated URLs for all shanks:")
 for url in url_list:
     print(url)
