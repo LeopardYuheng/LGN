@@ -9,7 +9,7 @@ close all; clc; clear; fclose('all');
 % -------------------------
 response_sec = [0 1.0];
 alpha = 0.05;
-min_cluster_size = 100;
+min_cluster_size = 150;
 conn = 8;
 
 use_analysis_mask_for_stats = true;
@@ -121,6 +121,23 @@ end
 
 session_condition_table = struct2table(session_condition_rows);
 
+session_significance_rows = struct( ...
+    'session_index', {}, ...
+    'session_label', {}, ...
+    'n_significant_conditions', {}, ...
+    'n_total_conditions', {} );
+
+for s = 1:numel(session_results)
+    conds = session_results(s).condition_results;
+    session_significance_rows(end+1).session_index = s; %#ok<AGROW>
+    session_significance_rows(end).session_label = string(session_results(s).session_label);
+    session_significance_rows(end).n_significant_conditions = sum([conds.has_cluster]);
+    session_significance_rows(end).n_total_conditions = numel(conds);
+end
+
+session_significance_table = struct2table(session_significance_rows);
+significant_session_condition_table = session_condition_table(session_condition_table.has_cluster, :);
+
 %% -------------------------
 % CHANNEL THRESHOLD TABLE
 % -------------------------
@@ -159,16 +176,6 @@ for s = 1:numel(session_results)
 end
 condition_keys = unique(condition_keys);
 
-comparison_summary = struct( ...
-    'condition_key', {}, ...
-    'channel', {}, ...
-    'current_uA', {}, ...
-    'session_indices', {}, ...
-    'session_labels', {}, ...
-    'n_sessions', {}, ...
-    'n_active_sessions', {}, ...
-    'pairwise_metrics', {} );
-
 pairwise_rows = struct( ...
     'condition_key', {}, ...
     'channel', {}, ...
@@ -187,23 +194,23 @@ pairwise_rows = struct( ...
     'iou', {}, ...
     'centroid_distance_px', {}, ...
     'peak_distance_px', {}, ...
-    'map_corr_common_mask', {}, ...
+    'pixel_corr_r', {}, ...
+    'pixel_corr_p', {}, ...
+    'n_common_pixels', {}, ...
+    'mean_abs_diff', {}, ...
+    'rmse', {}, ...
     'fraction_activated_diff', {}, ...
     'mean_cluster_effect_diff', {} );
 
-threshold_pairwise_rows = struct( ...
+condition_significance_rows = struct( ...
+    'condition_key', {}, ...
     'channel', {}, ...
-    'session_a', {}, ...
-    'session_b', {}, ...
-    'threshold_uA_a', {}, ...
-    'threshold_uA_b', {}, ...
-    'threshold_uA_diff', {}, ...
-    'has_threshold_a', {}, ...
-    'has_threshold_b', {}, ...
-    'threshold_dice', {}, ...
-    'threshold_iou', {}, ...
-    'threshold_centroid_distance_px', {}, ...
-    'threshold_peak_distance_px', {} );
+    'current_uA', {}, ...
+    'n_sessions_present', {}, ...
+    'n_sessions_significant', {}, ...
+    'is_significant_across_days', {}, ...
+    'significant_session_labels', {}, ...
+    'all_session_labels', {} );
 
 for k = 1:numel(condition_keys)
     key = condition_keys{k};
@@ -214,31 +221,55 @@ for k = 1:numel(condition_keys)
         continue;
     end
 
-    pairwise_metrics = struct([]);
-    for i = 1:numel(matched)-1
-        for j = i+1:numel(matched)
+    active_mask = [matched.condition];
+    active_mask = [active_mask.has_cluster];
+
+    condition_significance_rows(end+1).condition_key = string(key); %#ok<AGROW>
+    condition_significance_rows(end).channel = channel_i;
+    condition_significance_rows(end).current_uA = current_i;
+    condition_significance_rows(end).n_sessions_present = numel(matched);
+    condition_significance_rows(end).n_sessions_significant = sum(active_mask);
+    condition_significance_rows(end).is_significant_across_days = sum(active_mask) >= 2;
+    condition_significance_rows(end).significant_session_labels = strjoin({matched(active_mask).session_label}, '; ');
+    condition_significance_rows(end).all_session_labels = strjoin({matched.session_label}, '; ');
+
+    if sum(active_mask) < 2
+        continue;
+    end
+
+    matched_active = matched(active_mask);
+
+    pairwise_metrics = struct( ...
+        'session_index_a', {}, ...
+        'session_index_b', {}, ...
+        'session_label_a', {}, ...
+        'session_label_b', {}, ...
+        'has_cluster_a', {}, ...
+        'has_cluster_b', {}, ...
+        'same_image_size', {}, ...
+        'same_common_mask_size', {}, ...
+        'active_pixels_a', {}, ...
+        'active_pixels_b', {}, ...
+        'intersection_pixels', {}, ...
+        'union_pixels', {}, ...
+        'dice', {}, ...
+        'iou', {}, ...
+        'centroid_distance_px', {}, ...
+        'peak_distance_px', {}, ...
+        'pixel_similarity', {}, ...
+        'fraction_activated_diff', {}, ...
+        'mean_cluster_effect_diff', {} );
+    for i = 1:numel(matched_active)-1
+        for j = i+1:numel(matched_active)
             pairwise_metrics(end+1) = compare_condition_pair( ... %#ok<AGROW>
-                matched(i), matched(j), session_results);
+                matched_active(i), matched_active(j), session_results);
 
             pairwise_rows(end+1) = pairwise_metric_to_row( ... %#ok<AGROW>
                 pairwise_metrics(end), channel_i, current_i, key);
         end
     end
 
-    comparison_summary(end+1).condition_key = key;
-    comparison_summary(end).channel = channel_i;
-    comparison_summary(end).current_uA = current_i;
-    comparison_summary(end).session_indices = [matched.session_index];
-    comparison_summary(end).session_labels = {matched.session_label};
-    comparison_summary(end).n_sessions = numel(matched);
-    comparison_summary(end).n_active_sessions = sum([matched.condition.has_cluster]);
-    comparison_summary(end).pairwise_metrics = pairwise_metrics;
-
-    fig = make_condition_comparison_figure(matched, session_results, clim_to_use);
-    exportgraphics(fig, fullfile(save_root, sprintf('%s_comparison.png', sanitize_filename(key))), 'Resolution', 200);
-    close(fig);
-
-    pair_figs = make_pairwise_overlap_figures(matched, session_results, clim_to_use);
+    pair_figs = make_pairwise_overlap_figures(matched_active, session_results, clim_to_use);
     for pf_i = 1:numel(pair_figs)
         exportgraphics(pair_figs(pf_i).fig, ...
             fullfile(save_root, sprintf('%s_pair_%s_vs_%s_overlap.png', ...
@@ -251,37 +282,23 @@ for k = 1:numel(condition_keys)
 end
 
 pairwise_table = struct2table(pairwise_rows);
-
-for ch = unique(channel_threshold_table.channel(:))'
-    matched_thresholds = find_threshold_across_sessions(session_results, ch);
-    if numel(matched_thresholds) < 2
-        continue;
-    end
-
-    for i = 1:numel(matched_thresholds)-1
-        for j = i+1:numel(matched_thresholds)
-            metric = compare_threshold_pair(matched_thresholds(i), matched_thresholds(j), session_results);
-            threshold_pairwise_rows(end+1) = threshold_metric_to_row(metric, ch);
-        end
-    end
-end
-
-threshold_pairwise_table = struct2table(threshold_pairwise_rows);
+condition_significance_table = struct2table(condition_significance_rows);
 
 %% -------------------------
 % SAVE SUMMARY FILES
 % -------------------------
 save(fullfile(save_root, 'multi_session_activation_comparison.mat'), ...
-    'session_results', 'session_condition_table', 'comparison_summary', ...
-    'pairwise_table', 'channel_threshold_table', 'threshold_pairwise_table', ...
+    'session_results', 'session_condition_table', 'session_significance_table', ...
+    'significant_session_condition_table', 'condition_significance_table', 'pairwise_table', ...
     'response_sec', 'alpha', 'min_cluster_size', 'conn', ...
     'use_analysis_mask_for_stats', 'mask_outside_for_display', ...
     'clim_to_use', '-v7.3');
 
 writetable(session_condition_table, fullfile(save_root, 'session_condition_summary.csv'));
+writetable(significant_session_condition_table, fullfile(save_root, 'significant_session_conditions.csv'));
+writetable(session_significance_table, fullfile(save_root, 'session_significant_condition_counts.csv'));
+writetable(condition_significance_table, fullfile(save_root, 'conditions_significant_across_days.csv'));
 writetable(pairwise_table, fullfile(save_root, 'pairwise_condition_comparison.csv'));
-writetable(channel_threshold_table, fullfile(save_root, 'channel_threshold_summary.csv'));
-writetable(threshold_pairwise_table, fullfile(save_root, 'pairwise_threshold_comparison.csv'));
 
 fprintf('\nSaved multi-session comparison outputs to:\n  %s\n', save_root);
 
@@ -620,7 +637,7 @@ if any(~isfinite([cond_a.peak_xy, cond_b.peak_xy]))
     peak_distance_px = NaN;
 end
 
-map_corr_common_mask = compute_map_correlation( ...
+pixel_similarity = compute_pixel_similarity( ...
     cond_a.mean_evoked_map, cond_b.mean_evoked_map, ...
     session_results(match_a.session_index), session_results(match_b.session_index));
 
@@ -641,7 +658,7 @@ pairwise_metric.dice = overlap.dice;
 pairwise_metric.iou = overlap.iou;
 pairwise_metric.centroid_distance_px = centroid_distance_px;
 pairwise_metric.peak_distance_px = peak_distance_px;
-pairwise_metric.map_corr_common_mask = map_corr_common_mask;
+pairwise_metric.pixel_similarity = pixel_similarity;
 pairwise_metric.fraction_activated_diff = cond_b.fraction_activated - cond_a.fraction_activated;
 pairwise_metric.mean_cluster_effect_diff = cond_b.mean_cluster_effect - cond_a.mean_cluster_effect;
 end
@@ -698,25 +715,13 @@ row.dice = metric.dice;
 row.iou = metric.iou;
 row.centroid_distance_px = metric.centroid_distance_px;
 row.peak_distance_px = metric.peak_distance_px;
-row.map_corr_common_mask = metric.map_corr_common_mask;
+row.pixel_corr_r = metric.pixel_similarity.r;
+row.pixel_corr_p = metric.pixel_similarity.p;
+row.n_common_pixels = metric.pixel_similarity.n;
+row.mean_abs_diff = metric.pixel_similarity.mean_abs_diff;
+row.rmse = metric.pixel_similarity.rmse;
 row.fraction_activated_diff = metric.fraction_activated_diff;
 row.mean_cluster_effect_diff = metric.mean_cluster_effect_diff;
-end
-
-function row = threshold_metric_to_row(metric, channel_i)
-row = struct();
-row.channel = channel_i;
-row.session_a = string(metric.session_label_a);
-row.session_b = string(metric.session_label_b);
-row.threshold_uA_a = metric.threshold_uA_a;
-row.threshold_uA_b = metric.threshold_uA_b;
-row.threshold_uA_diff = metric.threshold_uA_diff;
-row.has_threshold_a = metric.has_threshold_a;
-row.has_threshold_b = metric.has_threshold_b;
-row.threshold_dice = metric.threshold_dice;
-row.threshold_iou = metric.threshold_iou;
-row.threshold_centroid_distance_px = metric.threshold_centroid_distance_px;
-row.threshold_peak_distance_px = metric.threshold_peak_distance_px;
 end
 
 function fig = make_condition_comparison_figure(matched, session_results, clim_to_use)
@@ -792,12 +797,14 @@ cond_b = match_b.condition;
 overlap = compute_overlap_metrics( ...
     logical(cond_a.largest_cluster_mask), logical(cond_b.largest_cluster_mask), ...
     sess_a, sess_b);
+pixel_similarity = compute_pixel_similarity( ...
+    cond_a.mean_evoked_map, cond_b.mean_evoked_map, sess_a, sess_b);
 
 fig = figure('Color', 'w', 'Name', sprintf('Overlap %s vs %s', match_a.session_label, match_b.session_label), ...
-    'Position', [100 100 1320 430]);
-t = tiledlayout(fig, 1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+    'Position', [100 80 1580 760]);
+t = tiledlayout(fig, 2, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 title(t, sprintf('Ch %d | %g uA | %s vs %s', cond_a.channel, cond_a.current_uA, ...
-    match_a.session_label, match_b.session_label), 'Interpreter', 'none');
+    match_a.session_label, match_b.session_label), 'Interpreter', 'none', 'FontSize', 18, 'FontWeight', 'bold');
 
 ax1 = nexttile(t);
 plot_condition_panel(ax1, cond_a, sess_a, clim_to_use, match_a.session_label);
@@ -807,7 +814,11 @@ plot_condition_panel(ax2, cond_b, sess_b, clim_to_use, match_b.session_label);
 
 ax3 = nexttile(t);
 plot_pairwise_overlap_panel(ax3, overlap, sess_a, sess_b);
-title(ax3, sprintf('Dice %.3f | IoU %.3f', overlap.dice, overlap.iou), 'Interpreter', 'none');
+title(ax3, sprintf('Overlap Map | Dice %.3f | IoU %.3f | Pixel r %.3f', ...
+    overlap.dice, overlap.iou, pixel_similarity.r), 'Interpreter', 'none', 'FontSize', 14);
+
+ax4 = nexttile(t);
+plot_pairwise_summary_panel(ax4, overlap, pixel_similarity, sess_a, sess_b);
 
 pair_fig = struct();
 pair_fig.fig = fig;
@@ -833,8 +844,8 @@ end
 if all(isfinite(cond.peak_xy))
     plot(ax, cond.peak_xy(1), cond.peak_xy(2), 'wo', 'MarkerFaceColor', 'm', 'MarkerSize', 6);
 end
-title(ax, sprintf('%s\nactive=%d | area=%d', label_text, cond.has_cluster, cond.largest_cluster_size), ...
-    'Interpreter', 'none');
+title(ax, sprintf('%s | active=%d | area=%d', label_text, cond.has_cluster, cond.largest_cluster_size), ...
+    'Interpreter', 'none', 'FontSize', 14);
 colorbar(ax);
 end
 
@@ -868,22 +879,36 @@ end
 hold(ax, 'on');
 visboundaries(ax, sess_a.V1_mask & sess_b.V1_mask, 'Color', 'w', 'LineWidth', 1.0);
 visboundaries(ax, sess_a.final_mask & sess_b.final_mask, 'Color', 'y', 'LineWidth', 1.0);
-
-summary_text = {
-    sprintf('%s only (red): %d px', sess_a.session_label, sum(overlap.a_only_mask(:)))
-    sprintf('%s only (blue): %d px', sess_b.session_label, sum(overlap.b_only_mask(:)))
-    sprintf('Shared overlap (green): %d px', overlap.intersection_pixels)
-    sprintf('Union: %d px', overlap.union_pixels)
-    sprintf('Centroid dist: %.2f px', overlap.centroid_distance_px)
-    };
-text(ax, 0.02, 0.98, summary_text, 'Units', 'normalized', ...
-    'Color', 'w', 'FontSize', 10, 'VerticalAlignment', 'top', ...
-    'BackgroundColor', 'k', 'Margin', 6);
 end
 
-function r = compute_map_correlation(map_a, map_b, session_a, session_b)
-if ~isequal(size(map_a), size(map_b))
-    r = NaN;
+function plot_pairwise_summary_panel(ax, overlap, pixel_similarity, sess_a, sess_b)
+axis(ax, 'off');
+
+summary_text = {
+    sprintf('Active pixels: %d vs %d', overlap.active_pixels_a, overlap.active_pixels_b)
+    sprintf('%s only: %d px', sess_a.session_label, sum(overlap.a_only_mask(:)))
+    sprintf('%s only: %d px', sess_b.session_label, sum(overlap.b_only_mask(:)))
+    sprintf('Intersection: %d px', overlap.intersection_pixels)
+    sprintf('Union: %d px', overlap.union_pixels)
+    sprintf('Dice: %.3f', overlap.dice)
+    sprintf('IoU: %.3f', overlap.iou)
+    sprintf('Pixel correlation r: %.3f', pixel_similarity.r)
+    sprintf('Pixel correlation p: %.3g', pixel_similarity.p)
+    sprintf('Common pixels: %d', pixel_similarity.n)
+    sprintf('Mean absolute diff: %.4f', pixel_similarity.mean_abs_diff)
+    sprintf('RMSE: %.4f', pixel_similarity.rmse)
+    sprintf('Centroid distance: %.2f px', overlap.centroid_distance_px)
+    };
+
+text(ax, 0.02, 0.98, summary_text, 'Units', 'normalized', ...
+    'FontSize', 14, 'Interpreter', 'none', 'VerticalAlignment', 'top');
+xlim(ax, [0 1]);
+ylim(ax, [0 1]);
+end
+
+function similarity = compute_pixel_similarity(map_a, map_b, session_a, session_b)
+similarity = struct('r', NaN, 'p', NaN, 'n', 0, 'mean_abs_diff', NaN, 'rmse', NaN);
+if ~isequal(size(map_a), size(map_b)) || ~isequal(size(session_a.analysis_mask), size(session_b.analysis_mask))
     return;
 end
 
@@ -894,14 +919,23 @@ y = map_b(common_mask);
 valid = isfinite(x) & isfinite(y);
 x = x(valid);
 y = y(valid);
+similarity.n = numel(x);
 
-if numel(x) < 3 || numel(unique(x)) < 2 || numel(unique(y)) < 2
-    r = NaN;
+if similarity.n == 0
     return;
 end
 
-R = corrcoef(x, y);
-r = R(1,2);
+diff_xy = x - y;
+similarity.mean_abs_diff = mean(abs(diff_xy), 'omitnan');
+similarity.rmse = sqrt(mean(diff_xy.^2, 'omitnan'));
+
+if similarity.n < 3 || numel(unique(x)) < 2 || numel(unique(y)) < 2
+    return;
+end
+
+[R, P] = corrcoef(x, y);
+similarity.r = R(1,2);
+similarity.p = P(1,2);
 end
 
 function overlap = compute_overlap_metrics(mask_a, mask_b, session_a, session_b)
