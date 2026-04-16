@@ -106,8 +106,18 @@ SetContinuousLoop(camChan, 1);
 % catch
 %     % no-op
 % end
+pause(cam_settle_s);
+
+%% --- Pre-stimulation baseline recording ---
+baseline_record_s = 5 * 60;   % 5 minutes
 
 pause(cam_settle_s);
+
+fprintf('Recording baseline widefield activity for %.1f minutes with no stimulation...\n', ...
+    baseline_record_s/60);
+pause(baseline_record_s);
+fprintf('Baseline recording complete. Starting stimulation trials.\n');
+
 %% ---------------- Read CSV back in (source of truth for total trials) ----------------
 trial_table = readtable(csv_path);
 total_trials = height(trial_table);
