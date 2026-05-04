@@ -2,7 +2,7 @@
 % timings and save into a mat folder for later extraction 
 
 clc; clear; close all; fclose('all');
-addpath('C:\Users\LuanLab\OneDrive - Rice University\Documents\GitHub\Luan_lab_retinomap-pipeline\analysis\stim_parameter_survey\neuroshare');
+addpath('C:\Albert Li\Luan_lab_retinomap-pipeline\analysis\longitudinal_stim_parameter_survey\neuroshare');
 %% =========================
 % USER METADATA (subject + date, user-entered)
 %% =========================

@@ -1,127 +1,134 @@
-# Luan Lab - Widefield experiment scripts and Stimulation + Widefield alignment code
+# Luan Lab Widefield Post-Experiment Guide
 
-This repository contains MATLAB scripts for running widefield imaging experiments, retinotopic mapping, stimulation parameter surveys, and downstream analysis of cortical responses.
+Once you finish an experiment, the most important thing is to keep the data organized and unified before running analysis.
 
-The pipeline is organized into sequential stages: stimulus presentation, data extraction, spatial alignment, and analysis.
+This repository’s scripts pass file paths from one step to the next. Early scripts save bookkeeping files that point to image folders, setup files, CSVs, and session timing files. Later scripts load those saved paths back in and expect the data to still be in the same place.
 
----
+Because of that:
 
-## Pipeline Overview
+- Put the data in its final location before running the pipeline.
+- Keep one consistent folder structure across subjects and sessions.
+- Do not move or rename image folders, ephys folders, or session files after analysis files have been generated.
+- If data is moved after bookkeeping files are created, later scripts may fail because they still point to the original locations.
 
-The typical workflow is:
+## First Thing To Do
 
-1. **Flash Test (System Validation)**
-2. **Retinotopic Mapping (Define V1)**
-3. **Stimulation Parameter Survey (Data Collection)**
-4. **Analysis (Dose–Response and Temporal Dynamics)**
+Set up the file structure clearly and consistently.
 
-Each stage is described below.
+Recommended structure:
 
----
+```text
+SubjectName/
+  img/
+  ephys/
+```
 
-## 1. Flash Test (System Validation)
+Where:
 
-Used to verify that the imaging system, stimulus display, and trigger synchronization are functioning correctly.
+- `SubjectName` is the subject folder for that experiment or session grouping.
+- `img` contains the widefield TIFF data and related imaging outputs.
+- `ephys` contains the electrophysiology data generated from the experiment.
 
-### Scripts
+The key point is consistency. The scripts are easier to use when every experiment follows the same structure, and future users can trace the pipeline much more easily when imaging and ephys data live in the same predictable layout.
 
-- **`run_flash_test_visuals.m`**  
-  Presents a full-field white flash stimulus while sending triggers to the acquisition system. Used to confirm correct stimulus delivery and camera synchronization.
+## Why Keeping Everything Unified Matters
 
-- **`white_flash_analysis.m`**  
-  Computes ΔF/F responses from the flash test and generates basic response maps and time courses for quality control.
+The pipeline links several data sources together:
 
----
+- retinotopy outputs
+- TIFF image folders
+- stimulation timing extracted from electrophysiology recordings
+- stimulation condition CSV files
+- downstream analysis outputs
 
-## 2. Retinotopic Mapping (Define V1)
+These are not treated as isolated files. They become connected through saved `.mat` files that store metadata and paths. If one piece is moved later, the rest of the pipeline may no longer know where to find it.
 
-Used to identify visual cortical areas and define a V1 mask for subsequent analyses.
+Keeping everything unified helps with:
 
-### Scripts
+- reproducibility
+- easier troubleshooting
+- cleaner handoff to the next person
+- fewer broken path issues
+- easier across-session comparisons
 
-- **`run_retinotopic_mapping_stimulus.m`**  
-  Runs a retinotopic mapping stimulus (e.g., drifting bars or phase-encoded stimuli) and records timing signals.
+## After The Experiment: Analysis Order
 
-- **`compute_retino_maps.m`**  
-  Processes the retinotopy dataset to compute spatial maps (e.g., phase maps, visual field sign), producing a processed `.mat` file.
+### 1. Run retinotopic mapping first
 
-- **`generate_retino_mask.m`**  
-  Interactive tool for drawing and saving a V1 mask (or visual area boundaries) based on retinotopic maps.
+Run [reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m).
 
-  *Note:* This step can be repeated to refine the mask after reviewing results.
+This step defines the reference mask and retinotopic alignment information used later by the stimulation-analysis pipeline. Downstream scripts rely on these outputs to define analysis regions such as V1 and to keep comparisons consistent across sessions.
 
----
+### 2. Run the numbered scripts in longitudinal stim parameter survey
 
-## 3. Stimulation Parameter Survey (Widefield + Ephys)
+Then run the scripts in numbered order in [analysis/longitudinal_stim_parameter_survey](analysis/longitudinal_stim_parameter_survey).
 
-Used to measure cortical responses to thalamic (LGN) stimulation across different stimulation parameters.
+Canonical order:
 
-### Scripts
+1. [extract_nev_stim_and_camera_1.m](analysis/longitudinal_stim_parameter_survey/extract_nev_stim_and_camera_1.m)
+2. [align_wf_with_nev_extracted_2.m](analysis/longitudinal_stim_parameter_survey/align_wf_with_nev_extracted_2.m)
+3. [make_container_ripple_3.m](analysis/longitudinal_stim_parameter_survey/make_container_ripple_3.m)
+4. [current_thresholding_analysis_pixelwise_region_4.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_region_4.m)
+5. [compare_pixelwise_activation_across_sessions_5.m](analysis/longitudinal_stim_parameter_survey/compare_pixelwise_activation_across_sessions_5.m)
 
-- **`run_wf_ephys_stim_param_survey.m`**  
-  Runs the stimulation protocol, delivering electrical stimulation across conditions (e.g., current levels, frequencies, durations) while recording widefield imaging and electrophysiology.
+## What Each Step Is Doing
 
-- **`extract_nev_stim_and_camera.m`**  
-  Extracts stimulation timestamps and camera trigger signals from recorded Ripple `.nev` files and saves a timing bookkeeping file.
+### Retinotopy
 
-  Default saved output:
-  - `{subject}_{date}_ripple_timing.mat`
-  - top-level variable: `ripple_timing`
+[reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m)
 
----
+- Defines the reference mask
+- Establishes retinotopic alignment
+- Produces the mask information used by later stimulation analyses
 
-## 4. Longitudinal Widefield Alignment
+### Step 1
 
-Used to align one day of TIFF frames to Ripple timing, then package that day into a lightweight pointer object for across-day comparisons.
+[extract_nev_stim_and_camera_1.m](analysis/longitudinal_stim_parameter_survey/extract_nev_stim_and_camera_1.m)
 
-### Scripts
+- Extracts stimulation and camera timing from the ephys recording
+- Produces a timing file used for widefield/ephys alignment
 
-- **`align_wf_with_nev_extracted.m`**  
-  Loads the Ripple timing file, TIFF directory, retinotopy/day-setup file, and stimulation CSV, then builds a per-day alignment/bookkeeping file.
+### Step 2
 
-  Default saved output:
-  - `{subject}_{date}_wf_trial_alignment.mat`
-  - top-level variable: `wf_trial_alignment`
+[align_wf_with_nev_extracted_2.m](analysis/longitudinal_stim_parameter_survey/align_wf_with_nev_extracted_2.m)
 
-- **`make_container_ripple.m`**  
-  Converts a per-day `wf_trial_alignment` file into a lightweight grouped day pointer for downstream longitudinal analyses.
+- Aligns the widefield TIFF sequence with extracted stimulation timing
+- Combines imaging, timing, setup, and stimulation-condition information
 
-  Default saved output:
-  - `{subject}_{date}_day_pointer.mat`
-  - top-level variable: `day_pointer`
+### Step 3
 
----
+[make_container_ripple_3.m](analysis/longitudinal_stim_parameter_survey/make_container_ripple_3.m)
 
-## 5. Analysis (Response Characterization)
+- Builds the day pointer/container used by downstream scripts
+- Stores references to the relevant files and grouped trial information
 
-Used to quantify spatial and temporal response properties.
+### Step 4
 
-### Scripts
+[current_thresholding_analysis_pixelwise_region_4.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_region_4.m)
 
-- **`current_thresholding_analysis.m`**  
-  Computes dose–response relationships and estimates activation thresholds for each stimulation channel.
+- Runs the single-session pixelwise activation analysis
+- Computes threshold and activation-region summaries by channel/current
 
-- **`dff_over_time_analysis.m`**  
-  Computes ΔF/F time courses aligned to stimulation events and visualizes temporal dynamics across conditions.
+### Step 5
 
----
+[compare_pixelwise_activation_across_sessions_5.m](analysis/longitudinal_stim_parameter_survey/compare_pixelwise_activation_across_sessions_5.m)
 
-## Notes
+- Compares matched channel-current activation maps across sessions
+- Produces overlap and reproducibility metrics across days
 
-- Most scripts require manual interaction (e.g., ROI drawing, control point selection).
-- Data files are not included in this repository; users must provide their own datasets following the expected structure.
-- Outputs are saved locally (e.g., `.mat` files, figures) for downstream analysis.
-- During the naming transition, some scripts can still read legacy variables such as `session`, `out`, and `C`, but new outputs should use `ripple_timing`, `wf_trial_alignment`, and `day_pointer`.
+## Important Path Behavior
 
----
+Several scripts save structures that contain file paths or relative file references. These saved outputs are then reused by later scripts.
 
-## Summary
+That means:
 
-This pipeline enables:
+- choose the correct folders when prompted
+- make sure the experiment data is already in its final home
+- avoid reorganizing the dataset midway through analysis
 
-- Validation of imaging and stimulus timing
-- Identification of visual cortical regions (V1)
-- Quantification of cortical responses to thalamic stimulation
-- Analysis of spatial organization and response magnitude
+If you need to reorganize data, do it before running the pipeline, not after.
 
----
+## Practical Rule
+
+Once the experiment data is in place and you start running the pipeline, treat the folder locations as fixed.
+

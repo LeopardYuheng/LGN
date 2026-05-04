@@ -1,3 +1,36 @@
+% white_flash_analysis.m
+%
+% Purpose:
+% Analyze a white-flash widefield imaging session by aligning Intan digital
+% inputs to camera frames, averaging trial-aligned image sequences, computing
+% dF/F, applying a user-defined analysis mask, and extracting response
+% timecourses from automatically and manually selected ROIs.
+%
+% Main workflow:
+% 1. Read Intan RHD files and extract digital input traces.
+% 2. Identify stimulus/photodiode and camera TTL rising edges.
+% 3. Match camera triggers to TIFF images and group frames into trials.
+% 4. Average images across trials and compute a trial-mean dF/F movie.
+% 5. Let the user define a circular analysis region and exclusion polygons.
+% 6. Build a masked maximum- or minimum-intensity projection, depending on
+%    whether the session is wildtype.
+% 7. Let the user define ROIs and extract dF/F timecourses for those regions.
+%
+% User interaction required:
+% - Selecting the image folder
+% - Drawing the analysis mask
+% - Choosing wildtype status
+% - Drawing a manual ROI
+%
+% Main saved outputs:
+% - DIN.mat
+% - analysis/mask_confirmation.png
+% - analysis/analysis_mask.mat
+% - analysis/masked_mip_with_roi.fig/.png
+% - analysis/roi_fluorescence.mat
+% - analysis/manual_roi_fluorescence.mat
+% - analysis/*DeltaFoverF_Over_Time.fig/.png
+
 close all;
 % addpath(genpath('G:\xiaorong\Data_processing_Xiaorong'))
 addpath(genpath('Z:\xl_cl\Retino\Data_processing_Xiaorong'))
