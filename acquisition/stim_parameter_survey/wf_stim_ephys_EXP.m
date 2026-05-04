@@ -35,9 +35,9 @@ default_stim_duration_s = 0.5;  % X
 % ITI after EACH stimulation
 ITI_s = 3;
 
-% --- Trial list parameters (vary by trial) ---
+% % --- Trial list parameters (vary by trial) ---
 currents_uA = [0 2 3 4 5 7];
-% currents_uA = [0 7];
+% currents_uA = [0];
 
 
 channels    = [16 18 28 32 50 84 86 87 96 114 122];

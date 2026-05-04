@@ -6,15 +6,19 @@ close all; clc; clear; fclose('all');
 %% -------------------------
 % USER OPTIONS
 % -------------------------
-response_sec = [0 1.0]; % Used when computing the mean evoked ΔF/F map
+response_sec = [0.4 0.6]; % Used when computing the mean evoked ΔF/F map
 alpha = 0.05;  %A pixel is considered “active” if its response is unlikely under baseline noise (p < 0.05).
-min_cluster_size = 100; % Removes noise / isolated pixels that pass threshold by chance
+min_cluster_size = 200; % Removes noise / isolated pixels that pass threshold by chance
 conn = 8;
 
 use_analysis_mask_for_stats = true;
 mask_outside_for_display = true;
 use_shared_clim = true;
 shared_clim = [];
+
+% Consistency filter (per-pixel activation frequency)
+consistency_k = 1.0;     % pixel considered active on a trial if trial value > base_mean + k*base_std
+consistency_thresh = 0.38; % require cluster mean activation_fraction >= 0.5
 
 %% -------------------------
 % LOAD DAY POINTER
@@ -154,7 +158,7 @@ for ch_i = 1:numel(unique_channels)
         'current_uA', {}, 'n_trials', {}, 'mean_evoked_map', {}, 'p_map', {}, ...
         'sig_pixel_mask', {}, 'sig_cluster_mask', {}, 'largest_cluster_mask', {}, ...
         'largest_cluster_size', {}, 'fraction_activated', {}, ...
-        'mean_cluster_effect', {}, 'has_cluster', {} );
+        'mean_cluster_effect', {}, 'activation_fraction', {}, 'mean_activation_fraction', {}, 'pass_consistency', {}, 'has_cluster', {} );
 
     threshold_uA = NaN;
     anchor_current_uA = max(currents_ch(currents_ch > 0));
@@ -188,10 +192,32 @@ for ch_i = 1:numel(unique_channels)
         [sig_cluster_mask, largest_cluster_mask, largest_cluster_size] = ...
             cluster_filter_mask(sig_pixel_mask, conn, min_cluster_size, H, W);
 
+        % per-pixel activation frequency across trials
+        % active on a trial if trial value > base_mean + consistency_k * base_std
+        base_mean_map = mean(base_maps, 3, 'omitnan');
+        base_std_map = std(base_maps, 0, 3, 'omitnan');
+        % build logical HxWxN map: active_trials(:,:,ti)
+        n_cur = size(cur_maps, 3);
+        active_trials = false(H, W, n_cur);
+        for ti = 1:n_cur
+            active_trials(:,:,ti) = cur_maps(:,:,ti) > (base_mean_map + consistency_k .* base_std_map);
+        end
+        activation_fraction = mean(active_trials, 3, 'omitnan');
+
         has_cluster = any(sig_cluster_mask(:));
         fraction_activated = sum(sig_cluster_mask(:)) / sum(stat_mask(:));
         mean_cluster_effect = mean(mean_evoked_map(sig_cluster_mask), 'omitnan');
         if ~has_cluster, mean_cluster_effect = NaN; end
+
+        % cluster-level consistency: mean activation_fraction across cluster pixels
+        if has_cluster
+            mean_activation_fraction = mean(activation_fraction(sig_cluster_mask), 'omitnan');
+        else
+            mean_activation_fraction = 0;
+        end
+        pass_consistency = mean_activation_fraction >= consistency_thresh;
+        % final decision: require consistency in addition to cluster presence
+        has_cluster = has_cluster && pass_consistency;
 
         if cur == anchor_current_uA
             anchor_mean_map = mean_evoked_map;
@@ -217,6 +243,9 @@ for ch_i = 1:numel(unique_channels)
         current_summary(end).largest_cluster_size = largest_cluster_size;
         current_summary(end).fraction_activated = fraction_activated;
         current_summary(end).mean_cluster_effect = mean_cluster_effect;
+        current_summary(end).activation_fraction = activation_fraction;
+        current_summary(end).mean_activation_fraction = mean_activation_fraction;
+        current_summary(end).pass_consistency = pass_consistency;
         current_summary(end).has_cluster = has_cluster;
     end
 
@@ -484,12 +513,64 @@ if ~isempty(all_sig_currents)
 end
 
 %% -------------------------
+% Prepare consistency summary table (per-channel, per-current)
+summary_rows = [];
+for r = 1:numel(results)
+    ch = results(r).channel;
+    cs_list = results(r).current_summary;
+    for k = 1:numel(cs_list)
+        cs = cs_list(k);
+        row.channel = ch;
+        row.current_uA = cs.current_uA;
+        row.n_trials = cs.n_trials;
+        if isfield(cs, 'mean_activation_fraction')
+            row.mean_activation_fraction = cs.mean_activation_fraction;
+        else
+            row.mean_activation_fraction = NaN;
+        end
+        row.fraction_activated = cs.fraction_activated;
+        row.largest_cluster_size = cs.largest_cluster_size;
+        row.mean_cluster_effect = cs.mean_cluster_effect;
+        if isfield(cs, 'pass_consistency')
+            row.pass_consistency = cs.pass_consistency;
+        else
+            row.pass_consistency = false;
+        end
+        row.has_cluster = cs.has_cluster;
+        summary_rows = [summary_rows; row]; %#ok<AGROW>
+    end
+end
+
+if ~isempty(summary_rows)
+    % convert struct array to table
+    channels_col = [summary_rows.channel]';
+    currents_col = [summary_rows.current_uA]';
+    ntrials_col = [summary_rows.n_trials]';
+    mean_frac_col = [summary_rows.mean_activation_fraction]';
+    frac_act_col = [summary_rows.fraction_activated]';
+    largest_sz_col = [summary_rows.largest_cluster_size]';
+    mean_eff_col = [summary_rows.mean_cluster_effect]';
+    pass_cons_col = [summary_rows.pass_consistency]';
+    has_cluster_col = [summary_rows.has_cluster]';
+
+    consistency_table = table(channels_col, currents_col, ntrials_col, mean_frac_col, frac_act_col, largest_sz_col, mean_eff_col, pass_cons_col, has_cluster_col, ...
+        'VariableNames', {'channel','current_uA','n_trials','mean_activation_fraction','fraction_activated','largest_cluster_size','mean_cluster_effect','pass_consistency','has_cluster'});
+
+    csv_file = fullfile(save_dir, 'pixelwise_activation_consistency_summary.csv');
+    try
+        writetable(consistency_table, csv_file);
+    catch
+        warning('Failed to write CSV summary to %s', csv_file);
+    end
+else
+    consistency_table = table();
+end
+
 % SAVE RESULTS
-% -------------------------
 save_file = fullfile(save_dir, 'pixelwise_threshold_region_results.mat');
 save(save_file, 'results', 'alpha', 'min_cluster_size', 'conn', ...
     'response_sec', 'pre_sec', 'post_sec', 'Fs', 'analysis_mask', 'final_mask', ...
-    'V1_mask', 'global_v1_xlim', 'global_v1_ylim', '-v7.3');
+    'V1_mask', 'global_v1_xlim', 'global_v1_ylim', 'consistency_table', '-v7.3');
 
 fprintf('\nSaved results to:\n  %s\n', save_file);
 

@@ -22,8 +22,8 @@ cfg = struct();
 cfg.pre_sec  = 1;
 cfg.post_sec = 3;
 
-out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-04-03\analysis\LGN11_20260403_wf_trial_alignment.mat';
-container_name = 'LGN11_20260403_day_pointer.mat';
+out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-04-24\analysis\LGN11_20260424_wf_trial_alignment.mat';
+container_name = 'LGN11_20260424_day_pointer.mat';
 
 %% ---------------- MAIN ----------------
 container_path = make_container_ripple_(out_mat_file, cfg, container_name);

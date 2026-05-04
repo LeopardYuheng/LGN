@@ -96,7 +96,7 @@ post_frames = round(post_sec * Fs);
 full_win = -pre_frames:post_frames;
 
 baseline_sec = [-1 0];
-response_sec = [0 1];
+response_sec = [0.4 0.6];
 
 baseline_idx = full_win >= baseline_sec(1)*Fs & full_win < baseline_sec(2)*Fs;
 response_idx = full_win > response_sec(1)*Fs & full_win <= response_sec(2)*Fs;

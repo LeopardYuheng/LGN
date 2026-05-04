@@ -7,10 +7,14 @@ close all; clc; clear; fclose('all');
 %% -------------------------
 % USER OPTIONS
 % -------------------------
-response_sec = [0 1.0];
+response_sec = [0.4 0.6];
 alpha = 0.05;
-min_cluster_size = 150;
+min_cluster_size = 200;
 conn = 8;
+consistency_k = 1.0;
+consistency_thresh = 0.38;
+analysis_region_mode = 'v1';   % v1 | v1_bounding_box
+registration_mode = 'final_mask_centroid_translation';   % none | final_mask_centroid_translation
 
 use_analysis_mask_for_stats = true;
 mask_outside_for_display = true;
@@ -62,7 +66,8 @@ for s = 1:n_sessions
 
     session_results(s) = analyze_single_session( ...
         day_pointer_files{s}, response_sec, alpha, min_cluster_size, conn, ...
-        use_analysis_mask_for_stats, mask_outside_for_display);
+        use_analysis_mask_for_stats, mask_outside_for_display, ...
+        consistency_k, consistency_thresh, analysis_region_mode);
 
     all_map_vals = [all_map_vals; collect_map_values(session_results(s).condition_results)]; %#ok<AGROW>
 end
@@ -107,6 +112,8 @@ session_condition_rows = struct( ...
     'largest_cluster_size', {}, ...
     'fraction_activated', {}, ...
     'mean_cluster_effect', {}, ...
+    'mean_activation_fraction', {}, ...
+    'pass_consistency', {}, ...
     'centroid_x', {}, ...
     'centroid_y', {}, ...
     'peak_x', {}, ...
@@ -200,7 +207,27 @@ pairwise_rows = struct( ...
     'mean_abs_diff', {}, ...
     'rmse', {}, ...
     'fraction_activated_diff', {}, ...
+    'mean_activation_fraction_diff', {}, ...
     'mean_cluster_effect_diff', {} );
+
+all_days_rows = struct( ...
+    'condition_key', {}, ...
+    'channel', {}, ...
+    'current_uA', {}, ...
+    'n_sessions_present', {}, ...
+    'n_sessions_significant', {}, ...
+    'session_labels', {}, ...
+    'same_image_size', {}, ...
+    'same_common_mask_size', {}, ...
+    'active_pixels_intersection_all', {}, ...
+    'active_pixels_union_all', {}, ...
+    'active_pixels_mean_per_session', {}, ...
+    'active_pixels_min_per_session', {}, ...
+    'active_pixels_max_per_session', {}, ...
+    'fraction_intersection_over_union', {}, ...
+    'fraction_intersection_over_mean_active', {}, ...
+    'mean_centroid_distance_to_group_px', {}, ...
+    'max_centroid_distance_to_group_px', {} );
 
 condition_significance_rows = struct( ...
     'condition_key', {}, ...
@@ -258,18 +285,22 @@ for k = 1:numel(condition_keys)
         'peak_distance_px', {}, ...
         'pixel_similarity', {}, ...
         'fraction_activated_diff', {}, ...
+        'mean_activation_fraction_diff', {}, ...
         'mean_cluster_effect_diff', {} );
     for i = 1:numel(matched_active)-1
         for j = i+1:numel(matched_active)
             pairwise_metrics(end+1) = compare_condition_pair( ... %#ok<AGROW>
-                matched_active(i), matched_active(j), session_results);
+                matched_active(i), matched_active(j), session_results, registration_mode);
 
             pairwise_rows(end+1) = pairwise_metric_to_row( ... %#ok<AGROW>
                 pairwise_metrics(end), channel_i, current_i, key);
         end
     end
 
-    pair_figs = make_pairwise_overlap_figures(matched_active, session_results, clim_to_use);
+    all_days_rows(end+1) = all_days_metric_to_row( ... %#ok<AGROW>
+        compare_condition_group(matched_active, session_results, registration_mode), channel_i, current_i, key);
+
+    pair_figs = make_pairwise_overlap_figures(matched_active, session_results, clim_to_use, registration_mode);
     for pf_i = 1:numel(pair_figs)
         exportgraphics(pair_figs(pf_i).fig, ...
             fullfile(save_root, sprintf('%s_pair_%s_vs_%s_overlap.png', ...
@@ -279,10 +310,25 @@ for k = 1:numel(condition_keys)
             'Resolution', 200);
         close(pair_figs(pf_i).fig);
     end
+
+    all_days_fig = make_all_days_overlap_figure(matched_active, session_results, clim_to_use, registration_mode);
+    exportgraphics(all_days_fig, ...
+        fullfile(save_root, sprintf('%s_all_days_overlap.png', sanitize_filename(key))), ...
+        'Resolution', 200);
+    close(all_days_fig);
 end
 
 pairwise_table = struct2table(pairwise_rows);
 condition_significance_table = struct2table(condition_significance_rows);
+all_days_overlap_table = struct2table(all_days_rows);
+
+%% -------------------------
+% OVERVIEW FIGURES
+% -------------------------
+make_significance_presence_figure( ...
+    condition_significance_table, session_results, save_root);
+make_all_days_iou_heatmap( ...
+    all_days_overlap_table, condition_significance_table, n_sessions, save_root);
 
 %% -------------------------
 % SAVE SUMMARY FILES
@@ -290,7 +336,11 @@ condition_significance_table = struct2table(condition_significance_rows);
 save(fullfile(save_root, 'multi_session_activation_comparison.mat'), ...
     'session_results', 'session_condition_table', 'session_significance_table', ...
     'significant_session_condition_table', 'condition_significance_table', 'pairwise_table', ...
+    'all_days_overlap_table', ...
     'response_sec', 'alpha', 'min_cluster_size', 'conn', ...
+    'consistency_k', 'consistency_thresh', ...
+    'analysis_region_mode', ...
+    'registration_mode', ...
     'use_analysis_mask_for_stats', 'mask_outside_for_display', ...
     'clim_to_use', '-v7.3');
 
@@ -299,13 +349,14 @@ writetable(significant_session_condition_table, fullfile(save_root, 'significant
 writetable(session_significance_table, fullfile(save_root, 'session_significant_condition_counts.csv'));
 writetable(condition_significance_table, fullfile(save_root, 'conditions_significant_across_days.csv'));
 writetable(pairwise_table, fullfile(save_root, 'pairwise_condition_comparison.csv'));
+writetable(all_days_overlap_table, fullfile(save_root, 'all_days_condition_overlap_summary.csv'));
 
 fprintf('\nSaved multi-session comparison outputs to:\n  %s\n', save_root);
 
 %% =========================
 % LOCAL FUNCTIONS
 % =========================
-function session_result = analyze_single_session(day_pointer_file, response_sec, alpha, min_cluster_size, conn, use_analysis_mask_for_stats, mask_outside_for_display)
+function session_result = analyze_single_session(day_pointer_file, response_sec, alpha, min_cluster_size, conn, use_analysis_mask_for_stats, mask_outside_for_display, consistency_k, consistency_thresh, analysis_region_mode)
 S = load(day_pointer_file);
 if isfield(S, 'day_pointer')
     day_pointer = S.day_pointer;
@@ -330,7 +381,7 @@ day_setup = D.day_setup;
 
 final_mask = logical(day_setup.reference_mask.final_mask);
 V1_mask = logical(day_setup.retino_align.V1_mask_stim);
-analysis_mask = final_mask & V1_mask;
+        analysis_mask = build_analysis_region_mask(final_mask, V1_mask, analysis_region_mode);
 
 [H, W] = size(analysis_mask);
 
@@ -386,6 +437,9 @@ condition_results = struct( ...
     'largest_cluster_size', {}, ...
     'fraction_activated', {}, ...
     'mean_cluster_effect', {}, ...
+    'activation_fraction', {}, ...
+    'mean_activation_fraction', {}, ...
+    'pass_consistency', {}, ...
     'has_cluster', {}, ...
     'centroid_xy', {}, ...
     'peak_xy', {} );
@@ -438,6 +492,22 @@ for ch_i = 1:numel(unique_channels)
             mean_cluster_effect = NaN;
         end
 
+        base_mean_map = mean(base_maps, 3, 'omitnan');
+        base_std_map = std(base_maps, 0, 3, 'omitnan');
+        n_cur = size(cur_maps, 3);
+        active_trials = false(H, W, n_cur);
+        for ti = 1:n_cur
+            active_trials(:,:,ti) = cur_maps(:,:,ti) > (base_mean_map + consistency_k .* base_std_map);
+        end
+        activation_fraction = mean(active_trials, 3, 'omitnan');
+        if has_cluster
+            mean_activation_fraction = mean(activation_fraction(sig_cluster_mask), 'omitnan');
+        else
+            mean_activation_fraction = 0;
+        end
+        pass_consistency = mean_activation_fraction >= consistency_thresh;
+        has_cluster = has_cluster && pass_consistency;
+
         centroid_xy = [NaN NaN];
         peak_xy = [NaN NaN];
         if any(largest_cluster_mask(:))
@@ -468,6 +538,9 @@ for ch_i = 1:numel(unique_channels)
         condition_results(end).largest_cluster_size = largest_cluster_size;
         condition_results(end).fraction_activated = fraction_activated;
         condition_results(end).mean_cluster_effect = mean_cluster_effect;
+        condition_results(end).activation_fraction = activation_fraction;
+        condition_results(end).mean_activation_fraction = mean_activation_fraction;
+        condition_results(end).pass_consistency = pass_consistency;
         condition_results(end).has_cluster = has_cluster;
         condition_results(end).centroid_xy = centroid_xy;
         condition_results(end).peak_xy = peak_xy;
@@ -516,6 +589,8 @@ row.has_cluster = cond.has_cluster;
 row.largest_cluster_size = cond.largest_cluster_size;
 row.fraction_activated = cond.fraction_activated;
 row.mean_cluster_effect = cond.mean_cluster_effect;
+row.mean_activation_fraction = cond.mean_activation_fraction;
+row.pass_consistency = cond.pass_consistency;
 row.centroid_x = cond.centroid_xy(1);
 row.centroid_y = cond.centroid_xy(2);
 row.peak_x = cond.peak_xy(1);
@@ -619,13 +694,13 @@ for s = 1:numel(session_results)
 end
 end
 
-function pairwise_metric = compare_condition_pair(match_a, match_b, session_results)
+function pairwise_metric = compare_condition_pair(match_a, match_b, session_results, registration_mode)
 cond_a = match_a.condition;
 cond_b = match_b.condition;
 
 overlap = compute_overlap_metrics( ...
     logical(cond_a.largest_cluster_mask), logical(cond_b.largest_cluster_mask), ...
-    session_results(match_a.session_index), session_results(match_b.session_index));
+    session_results(match_a.session_index), session_results(match_b.session_index), registration_mode);
 
 centroid_distance_px = norm(cond_a.centroid_xy - cond_b.centroid_xy);
 if any(~isfinite([cond_a.centroid_xy, cond_b.centroid_xy]))
@@ -639,7 +714,7 @@ end
 
 pixel_similarity = compute_pixel_similarity( ...
     cond_a.mean_evoked_map, cond_b.mean_evoked_map, ...
-    session_results(match_a.session_index), session_results(match_b.session_index));
+    session_results(match_a.session_index), session_results(match_b.session_index), registration_mode);
 
 pairwise_metric = struct();
 pairwise_metric.session_index_a = match_a.session_index;
@@ -660,16 +735,38 @@ pairwise_metric.centroid_distance_px = centroid_distance_px;
 pairwise_metric.peak_distance_px = peak_distance_px;
 pairwise_metric.pixel_similarity = pixel_similarity;
 pairwise_metric.fraction_activated_diff = cond_b.fraction_activated - cond_a.fraction_activated;
+pairwise_metric.mean_activation_fraction_diff = cond_b.mean_activation_fraction - cond_a.mean_activation_fraction;
 pairwise_metric.mean_cluster_effect_diff = cond_b.mean_cluster_effect - cond_a.mean_cluster_effect;
 end
 
-function metric = compare_threshold_pair(match_a, match_b, session_results)
+function analysis_mask = build_analysis_region_mask(final_mask, V1_mask, analysis_region_mode)
+switch lower(analysis_region_mode)
+    case 'v1'
+        analysis_mask = final_mask & V1_mask;
+    case 'v1_bounding_box'
+        pad_xy = 10;
+        [yy, xx] = find(V1_mask);
+        assert(~isempty(yy), 'V1_mask is empty.');
+        xmin = max(1, min(xx) - pad_xy);
+        xmax = min(size(V1_mask, 2), max(xx) + pad_xy);
+        ymin = max(1, min(yy) - pad_xy);
+        ymax = min(size(V1_mask, 1), max(yy) + pad_xy);
+        analysis_mask = false(size(final_mask));
+        analysis_mask(ymin:ymax, xmin:xmax) = true;
+    otherwise
+        error('Unsupported analysis_region_mode: %s', analysis_region_mode);
+end
+
+assert(any(analysis_mask(:)), 'analysis_mask is empty after applying analysis_region_mode.');
+end
+
+function metric = compare_threshold_pair(match_a, match_b, session_results, registration_mode)
 ch_a = match_a.channel_result;
 ch_b = match_b.channel_result;
 
 overlap = compute_overlap_metrics( ...
     logical(ch_a.threshold_cluster_mask), logical(ch_b.threshold_cluster_mask), ...
-    session_results(match_a.session_index), session_results(match_b.session_index));
+    session_results(match_a.session_index), session_results(match_b.session_index), registration_mode);
 
 threshold_centroid_distance_px = norm(ch_a.threshold_centroid_xy - ch_b.threshold_centroid_xy);
 if any(~isfinite([ch_a.threshold_centroid_xy, ch_b.threshold_centroid_xy]))
@@ -721,7 +818,211 @@ row.n_common_pixels = metric.pixel_similarity.n;
 row.mean_abs_diff = metric.pixel_similarity.mean_abs_diff;
 row.rmse = metric.pixel_similarity.rmse;
 row.fraction_activated_diff = metric.fraction_activated_diff;
+row.mean_activation_fraction_diff = metric.mean_activation_fraction_diff;
 row.mean_cluster_effect_diff = metric.mean_cluster_effect_diff;
+end
+
+function metric = compare_condition_group(matched_active, session_results, registration_mode)
+metric = struct();
+metric.session_labels = strjoin({matched_active.session_label}, '; ');
+metric.n_sessions_present = numel(matched_active);
+metric.n_sessions_significant = numel(matched_active);
+metric.same_image_size = true;
+metric.same_common_mask_size = true;
+metric.active_pixels_intersection_all = NaN;
+metric.active_pixels_union_all = NaN;
+metric.active_pixels_mean_per_session = NaN;
+metric.active_pixels_min_per_session = NaN;
+metric.active_pixels_max_per_session = NaN;
+metric.fraction_intersection_over_union = NaN;
+metric.fraction_intersection_over_mean_active = NaN;
+metric.mean_centroid_distance_to_group_px = NaN;
+metric.max_centroid_distance_to_group_px = NaN;
+
+if isempty(matched_active)
+    return;
+end
+
+sess_ref = session_results(matched_active(1).session_index);
+mask_list = cell(1, numel(matched_active));
+active_counts = nan(1, numel(matched_active));
+centroids = nan(numel(matched_active), 2);
+for i = 1:numel(matched_active)
+    cond_i = matched_active(i).condition;
+    sess_i = session_results(matched_active(i).session_index);
+    mask_i = logical(cond_i.largest_cluster_mask);
+    if i == 1
+        ref_mask_size = size(mask_i);
+        ref_analysis_size = size(sess_i.analysis_mask);
+        common_mask = sess_i.analysis_mask;
+        mask_list{i} = mask_i;
+        centroids(i, :) = cond_i.centroid_xy;
+    else
+        metric.same_image_size = metric.same_image_size && isequal(size(mask_i), ref_mask_size);
+        metric.same_common_mask_size = metric.same_common_mask_size && isequal(size(sess_i.analysis_mask), ref_analysis_size);
+        if metric.same_common_mask_size
+            common_mask = common_mask & warp_binary_to_reference(sess_i.analysis_mask, sess_ref, sess_i, registration_mode);
+        end
+        mask_list{i} = warp_binary_to_reference(mask_i, sess_ref, sess_i, registration_mode);
+        [dx, dy] = estimate_final_mask_translation(sess_ref.final_mask, sess_i.final_mask, registration_mode);
+        centroids(i, :) = cond_i.centroid_xy + [dx, dy];
+    end
+    active_counts(i) = sum(mask_list{i}(:));
+end
+
+if ~metric.same_image_size || ~metric.same_common_mask_size
+    return;
+end
+
+intersection_mask = common_mask;
+union_mask = false(ref_mask_size);
+for i = 1:numel(mask_list)
+    mask_common_i = mask_list{i} & common_mask;
+    intersection_mask = intersection_mask & mask_common_i;
+    union_mask = union_mask | mask_common_i;
+end
+
+metric.active_pixels_intersection_all = sum(intersection_mask(:));
+metric.active_pixels_union_all = sum(union_mask(:));
+metric.active_pixels_mean_per_session = mean(active_counts, 'omitnan');
+metric.active_pixels_min_per_session = min(active_counts);
+metric.active_pixels_max_per_session = max(active_counts);
+if metric.active_pixels_union_all > 0
+    metric.fraction_intersection_over_union = metric.active_pixels_intersection_all / metric.active_pixels_union_all;
+end
+if metric.active_pixels_mean_per_session > 0
+    metric.fraction_intersection_over_mean_active = metric.active_pixels_intersection_all / metric.active_pixels_mean_per_session;
+end
+
+valid_centroids = all(isfinite(centroids), 2);
+if any(valid_centroids)
+    centroid_mean = mean(centroids(valid_centroids, :), 1, 'omitnan');
+    centroid_dist = vecnorm(centroids(valid_centroids, :) - centroid_mean, 2, 2);
+    metric.mean_centroid_distance_to_group_px = mean(centroid_dist, 'omitnan');
+    metric.max_centroid_distance_to_group_px = max(centroid_dist);
+end
+end
+
+function row = all_days_metric_to_row(metric, channel_i, current_i, key)
+row = struct();
+row.condition_key = string(key);
+row.channel = channel_i;
+row.current_uA = current_i;
+row.n_sessions_present = metric.n_sessions_present;
+row.n_sessions_significant = metric.n_sessions_significant;
+row.session_labels = string(metric.session_labels);
+row.same_image_size = metric.same_image_size;
+row.same_common_mask_size = metric.same_common_mask_size;
+row.active_pixels_intersection_all = metric.active_pixels_intersection_all;
+row.active_pixels_union_all = metric.active_pixels_union_all;
+row.active_pixels_mean_per_session = metric.active_pixels_mean_per_session;
+row.active_pixels_min_per_session = metric.active_pixels_min_per_session;
+row.active_pixels_max_per_session = metric.active_pixels_max_per_session;
+row.fraction_intersection_over_union = metric.fraction_intersection_over_union;
+row.fraction_intersection_over_mean_active = metric.fraction_intersection_over_mean_active;
+row.mean_centroid_distance_to_group_px = metric.mean_centroid_distance_to_group_px;
+row.max_centroid_distance_to_group_px = metric.max_centroid_distance_to_group_px;
+end
+
+function make_significance_presence_figure(condition_significance_table, session_results, save_root)
+if isempty(condition_significance_table)
+    return;
+end
+
+session_labels = string({session_results.session_label});
+partial_idx = condition_significance_table.n_sessions_significant > 0 & ...
+    condition_significance_table.n_sessions_significant < numel(session_results);
+partial_table = condition_significance_table(partial_idx, :);
+if isempty(partial_table)
+    return;
+end
+
+condition_labels = strings(height(partial_table), 1);
+presence_mat = false(height(partial_table), numel(session_results));
+for i = 1:height(partial_table)
+    condition_labels(i) = sprintf('Ch %d | %g uA', ...
+        partial_table.channel(i), partial_table.current_uA(i));
+    sig_labels_i = split(string(partial_table.significant_session_labels(i)), ';');
+    sig_labels_i = strtrim(sig_labels_i);
+    for s = 1:numel(session_labels)
+        presence_mat(i, s) = any(sig_labels_i == session_labels(s));
+    end
+end
+
+[~, ord] = sort(partial_table.n_sessions_significant, 'descend');
+presence_mat = presence_mat(ord, :);
+condition_labels = condition_labels(ord);
+
+fig = figure('Color', 'w', 'Name', 'Condition significance across days', ...
+    'Position', [80 80 1200 900]);
+ax = axes(fig);
+imagesc(ax, double(presence_mat));
+axis(ax, 'tight');
+colormap(ax, [1 1 1; 0.1 0.65 0.2]);
+caxis(ax, [0 1]);
+xlabel(ax, 'Session');
+ylabel(ax, 'Channel | Current');
+title(ax, 'Conditions significant on only some days');
+set(ax, 'XTick', 1:numel(session_labels), 'XTickLabel', session_labels, ...
+    'YTick', 1:numel(condition_labels), 'YTickLabel', condition_labels, ...
+    'YDir', 'normal', 'XTickLabelRotation', 45);
+grid(ax, 'on');
+
+exportgraphics(fig, fullfile(save_root, 'condition_significance_presence_matrix.png'), ...
+    'Resolution', 200);
+close(fig);
+end
+
+function make_all_days_iou_heatmap(all_days_overlap_table, condition_significance_table, n_sessions, save_root)
+if isempty(all_days_overlap_table)
+    return;
+end
+
+channels = unique(all_days_overlap_table.channel);
+currents = unique(all_days_overlap_table.current_uA);
+heat_iou = nan(numel(channels), numel(currents));
+heat_nsig = nan(numel(channels), numel(currents));
+
+for i = 1:height(all_days_overlap_table)
+    r = find(channels == all_days_overlap_table.channel(i), 1);
+    c = find(currents == all_days_overlap_table.current_uA(i), 1);
+    heat_iou(r, c) = all_days_overlap_table.fraction_intersection_over_union(i);
+
+    idx_sig = condition_significance_table.channel == all_days_overlap_table.channel(i) & ...
+        condition_significance_table.current_uA == all_days_overlap_table.current_uA(i);
+    if any(idx_sig)
+        heat_nsig(r, c) = condition_significance_table.n_sessions_significant(find(idx_sig, 1));
+    end
+end
+
+fig = figure('Color', 'w', 'Name', 'All-days IoU heatmap', ...
+    'Position', [100 100 1200 520]);
+t = tiledlayout(fig, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+ax1 = nexttile(t);
+h1 = imagesc(ax1, heat_iou, [0 1]);
+set(h1, 'AlphaData', ~isnan(heat_iou));
+axis(ax1, 'image');
+colorbar(ax1);
+xlabel(ax1, 'Current (uA)');
+ylabel(ax1, 'Channel');
+title(ax1, sprintf('All-days IoU across conditions | %d sessions', n_sessions));
+set(ax1, 'XTick', 1:numel(currents), 'XTickLabel', string(currents), ...
+    'YTick', 1:numel(channels), 'YTickLabel', string(channels), 'YDir', 'normal');
+
+ax2 = nexttile(t);
+h2 = imagesc(ax2, heat_nsig, [0 n_sessions]);
+set(h2, 'AlphaData', ~isnan(heat_nsig));
+axis(ax2, 'image');
+colorbar(ax2);
+xlabel(ax2, 'Current (uA)');
+ylabel(ax2, 'Channel');
+title(ax2, 'Number of significant sessions per condition');
+set(ax2, 'XTick', 1:numel(currents), 'XTickLabel', string(currents), ...
+    'YTick', 1:numel(channels), 'YTickLabel', string(channels), 'YDir', 'normal');
+
+exportgraphics(fig, fullfile(save_root, 'all_days_iou_heatmap.png'), 'Resolution', 200);
+close(fig);
 end
 
 function fig = make_condition_comparison_figure(matched, session_results, clim_to_use)
@@ -774,7 +1075,7 @@ for i = 1:n_sessions
 end
 end
 
-function pair_figs = make_pairwise_overlap_figures(matched, session_results, clim_to_use)
+function pair_figs = make_pairwise_overlap_figures(matched, session_results, clim_to_use, registration_mode)
 pair_figs = struct('fig', {}, 'session_label_a', {}, 'session_label_b', {});
 if numel(matched) < 2
     return;
@@ -783,12 +1084,12 @@ end
 for i = 1:numel(matched)-1
     for j = i+1:numel(matched)
         pair_figs(end+1) = make_single_pairwise_overlap_figure( ... %#ok<AGROW>
-            matched(i), matched(j), session_results, clim_to_use);
+            matched(i), matched(j), session_results, clim_to_use, registration_mode);
     end
 end
 end
 
-function pair_fig = make_single_pairwise_overlap_figure(match_a, match_b, session_results, clim_to_use)
+function pair_fig = make_single_pairwise_overlap_figure(match_a, match_b, session_results, clim_to_use, registration_mode)
 sess_a = session_results(match_a.session_index);
 sess_b = session_results(match_b.session_index);
 cond_a = match_a.condition;
@@ -796,9 +1097,9 @@ cond_b = match_b.condition;
 
 overlap = compute_overlap_metrics( ...
     logical(cond_a.largest_cluster_mask), logical(cond_b.largest_cluster_mask), ...
-    sess_a, sess_b);
+    sess_a, sess_b, registration_mode);
 pixel_similarity = compute_pixel_similarity( ...
-    cond_a.mean_evoked_map, cond_b.mean_evoked_map, sess_a, sess_b);
+    cond_a.mean_evoked_map, cond_b.mean_evoked_map, sess_a, sess_b, registration_mode);
 
 fig = figure('Color', 'w', 'Name', sprintf('Overlap %s vs %s', match_a.session_label, match_b.session_label), ...
     'Position', [100 80 1580 760]);
@@ -813,7 +1114,7 @@ ax2 = nexttile(t);
 plot_condition_panel(ax2, cond_b, sess_b, clim_to_use, match_b.session_label);
 
 ax3 = nexttile(t);
-plot_pairwise_overlap_panel(ax3, overlap, sess_a, sess_b);
+plot_pairwise_overlap_panel(ax3, overlap, sess_a, sess_b, registration_mode);
 title(ax3, sprintf('Overlap Map | Dice %.3f | IoU %.3f | Pixel r %.3f', ...
     overlap.dice, overlap.iou, pixel_similarity.r), 'Interpreter', 'none', 'FontSize', 14);
 
@@ -824,6 +1125,80 @@ pair_fig = struct();
 pair_fig.fig = fig;
 pair_fig.session_label_a = match_a.session_label;
 pair_fig.session_label_b = match_b.session_label;
+end
+
+function fig = make_all_days_overlap_figure(matched_active, session_results, clim_to_use, registration_mode)
+group_metric = compare_condition_group(matched_active, session_results, registration_mode);
+sess_ref = session_results(matched_active(1).session_index);
+cond_ref = matched_active(1).condition;
+
+[count_map, intersection_mask, union_mask, common_mask] = build_all_days_overlap_maps(matched_active, session_results, registration_mode);
+
+fig = figure('Color', 'w', 'Name', sprintf('All-days overlap %s', matched_active(1).session_label), ...
+    'Position', [100 80 1700 820]);
+n_tiles = 4 + numel(matched_active);
+n_cols = 3;
+n_rows = ceil(n_tiles / n_cols);
+t = tiledlayout(fig, n_rows, n_cols, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(t, sprintf('Ch %d | %g uA | all significant sessions overlap', ...
+    cond_ref.channel, cond_ref.current_uA), 'Interpreter', 'none', 'FontSize', 18, 'FontWeight', 'bold');
+
+ax1 = nexttile(t);
+plot_condition_panel(ax1, matched_active(1).condition, sess_ref, clim_to_use, matched_active(1).session_label);
+
+ax2 = nexttile(t);
+imagesc(ax2, count_map);
+axis(ax2, 'image');
+axis(ax2, 'off');
+set(ax2, 'YDir', 'normal');
+xlim(ax2, sess_ref.global_v1_xlim);
+ylim(ax2, sess_ref.global_v1_ylim);
+colormap(ax2, turbo(max(2, numel(matched_active) + 1)));
+caxis(ax2, [0 numel(matched_active)]);
+hold(ax2, 'on');
+visboundaries(ax2, common_mask, 'Color', 'w', 'LineWidth', 1.0);
+visboundaries(ax2, intersection_mask, 'Color', 'm', 'LineWidth', 1.6);
+title(ax2, sprintf('Count map | max=%d sessions', numel(matched_active)), 'Interpreter', 'none');
+colorbar(ax2);
+
+ax3 = nexttile(t);
+rgb = zeros([size(count_map), 3]);
+rgb(:,:,1) = union_mask & ~intersection_mask;
+rgb(:,:,2) = intersection_mask;
+imagesc(ax3, rgb);
+axis(ax3, 'image');
+axis(ax3, 'off');
+set(ax3, 'YDir', 'normal');
+xlim(ax3, sess_ref.global_v1_xlim);
+ylim(ax3, sess_ref.global_v1_ylim);
+hold(ax3, 'on');
+visboundaries(ax3, common_mask, 'Color', 'w', 'LineWidth', 1.0);
+title(ax3, sprintf('Union / intersection | IoU(all)=%.3f', ...
+    group_metric.fraction_intersection_over_union), 'Interpreter', 'none');
+
+for i = 1:numel(matched_active)
+    ax = nexttile(t);
+    plot_condition_panel(ax, matched_active(i).condition, ...
+        session_results(matched_active(i).session_index), clim_to_use, matched_active(i).session_label);
+end
+
+ax_summary = nexttile(t);
+axis(ax_summary, 'off');
+summary_text = {
+    sprintf('Significant sessions: %d', numel(matched_active))
+    sprintf('Session labels: %s', group_metric.session_labels)
+    sprintf('Intersection (all): %d px', group_metric.active_pixels_intersection_all)
+    sprintf('Union (all): %d px', group_metric.active_pixels_union_all)
+    sprintf('IoU (all sessions): %.3f', group_metric.fraction_intersection_over_union)
+    sprintf('Intersection / mean active area: %.3f', group_metric.fraction_intersection_over_mean_active)
+    sprintf('Mean active pixels per session: %.1f', group_metric.active_pixels_mean_per_session)
+    sprintf('Centroid mean distance: %.2f px', group_metric.mean_centroid_distance_to_group_px)
+    sprintf('Centroid max distance: %.2f px', group_metric.max_centroid_distance_to_group_px)
+    };
+text(ax_summary, 0.02, 0.98, summary_text, 'Units', 'normalized', ...
+    'FontSize', 13, 'Interpreter', 'none', 'VerticalAlignment', 'top');
+xlim(ax_summary, [0 1]);
+ylim(ax_summary, [0 1]);
 end
 
 function plot_condition_panel(ax, cond, sess, clim_to_use, label_text)
@@ -849,7 +1224,7 @@ title(ax, sprintf('%s | active=%d | area=%d', label_text, cond.has_cluster, cond
 colorbar(ax);
 end
 
-function plot_pairwise_overlap_panel(ax, overlap, sess_a, sess_b)
+function plot_pairwise_overlap_panel(ax, overlap, sess_a, sess_b, registration_mode)
 if ~overlap.same_common_mask_size
     axis(ax, 'off');
     text(ax, 0, 1, 'Cannot plot overlap: image sizes differ.', ...
@@ -877,8 +1252,10 @@ if any(common_window(:))
 end
 
 hold(ax, 'on');
-visboundaries(ax, sess_a.V1_mask & sess_b.V1_mask, 'Color', 'w', 'LineWidth', 1.0);
-visboundaries(ax, sess_a.final_mask & sess_b.final_mask, 'Color', 'y', 'LineWidth', 1.0);
+v1_b_aligned = warp_binary_to_reference(sess_b.V1_mask, sess_a, sess_b, registration_mode);
+final_b_aligned = warp_binary_to_reference(sess_b.final_mask, sess_a, sess_b, registration_mode);
+visboundaries(ax, sess_a.V1_mask & v1_b_aligned, 'Color', 'w', 'LineWidth', 1.0);
+visboundaries(ax, sess_a.final_mask & final_b_aligned, 'Color', 'y', 'LineWidth', 1.0);
 end
 
 function plot_pairwise_summary_panel(ax, overlap, pixel_similarity, sess_a, sess_b)
@@ -906,13 +1283,40 @@ xlim(ax, [0 1]);
 ylim(ax, [0 1]);
 end
 
-function similarity = compute_pixel_similarity(map_a, map_b, session_a, session_b)
+function [count_map, intersection_mask, union_mask, common_mask] = build_all_days_overlap_maps(matched_active, session_results, registration_mode)
+sess_ref = session_results(matched_active(1).session_index);
+common_mask = sess_ref.analysis_mask;
+mask_common_list = cell(1, numel(matched_active));
+
+for i = 2:numel(matched_active)
+    sess_i = session_results(matched_active(i).session_index);
+    common_mask = common_mask & warp_binary_to_reference(sess_i.analysis_mask, sess_ref, sess_i, registration_mode);
+end
+
+count_map = zeros(size(common_mask));
+intersection_mask = common_mask;
+union_mask = false(size(common_mask));
+
+for i = 1:numel(matched_active)
+    sess_i = session_results(matched_active(i).session_index);
+    mask_i = logical(matched_active(i).condition.largest_cluster_mask);
+    mask_i = warp_binary_to_reference(mask_i, sess_ref, sess_i, registration_mode) & common_mask;
+    mask_common_list{i} = mask_i;
+    count_map = count_map + double(mask_i);
+    intersection_mask = intersection_mask & mask_i;
+    union_mask = union_mask | mask_i;
+end
+end
+
+function similarity = compute_pixel_similarity(map_a, map_b, session_a, session_b, registration_mode)
 similarity = struct('r', NaN, 'p', NaN, 'n', 0, 'mean_abs_diff', NaN, 'rmse', NaN);
 if ~isequal(size(map_a), size(map_b)) || ~isequal(size(session_a.analysis_mask), size(session_b.analysis_mask))
     return;
 end
 
-common_mask = session_a.analysis_mask & session_b.analysis_mask;
+map_b = warp_numeric_to_reference(map_b, session_a, session_b, registration_mode);
+analysis_mask_b = warp_binary_to_reference(session_b.analysis_mask, session_a, session_b, registration_mode);
+common_mask = session_a.analysis_mask & analysis_mask_b;
 x = map_a(common_mask);
 y = map_b(common_mask);
 
@@ -938,13 +1342,15 @@ similarity.r = R(1,2);
 similarity.p = P(1,2);
 end
 
-function overlap = compute_overlap_metrics(mask_a, mask_b, session_a, session_b)
+function overlap = compute_overlap_metrics(mask_a, mask_b, session_a, session_b, registration_mode)
 overlap = struct();
 overlap.same_image_size = isequal(size(mask_a), size(mask_b));
 overlap.same_common_mask_size = false;
 overlap.common_analysis_mask = [];
 overlap.mask_a_common = [];
 overlap.mask_b_common = [];
+overlap.mask_b_aligned = [];
+overlap.analysis_mask_b_aligned = [];
 overlap.a_only_mask = [];
 overlap.b_only_mask = [];
 overlap.both_mask = [];
@@ -961,9 +1367,11 @@ if ~overlap.same_image_size || ~isequal(size(session_a.analysis_mask), size(sess
 end
 
 overlap.same_common_mask_size = true;
-overlap.common_analysis_mask = session_a.analysis_mask & session_b.analysis_mask;
+overlap.analysis_mask_b_aligned = warp_binary_to_reference(session_b.analysis_mask, session_a, session_b, registration_mode);
+overlap.common_analysis_mask = session_a.analysis_mask & overlap.analysis_mask_b_aligned;
 overlap.mask_a_common = logical(mask_a) & overlap.common_analysis_mask;
-overlap.mask_b_common = logical(mask_b) & overlap.common_analysis_mask;
+overlap.mask_b_aligned = warp_binary_to_reference(mask_b, session_a, session_b, registration_mode);
+overlap.mask_b_common = overlap.mask_b_aligned & overlap.common_analysis_mask;
 overlap.a_only_mask = overlap.mask_a_common & ~overlap.mask_b_common;
 overlap.b_only_mask = overlap.mask_b_common & ~overlap.mask_a_common;
 overlap.both_mask = overlap.mask_a_common & overlap.mask_b_common;
@@ -999,6 +1407,57 @@ end
 if any(mask_b(:))
     [yy, xx] = find(mask_b);
     centroid_b = [mean(xx, 'omitnan'), mean(yy, 'omitnan')];
+end
+end
+
+function mask_out = warp_binary_to_reference(mask_in, session_ref, session_mov, registration_mode)
+if strcmpi(registration_mode, 'none')
+    mask_out = logical(mask_in);
+    return;
+end
+
+[dx, dy] = estimate_final_mask_translation(session_ref.final_mask, session_mov.final_mask, registration_mode);
+mask_out = imtranslate(single(mask_in), [dx dy], 'OutputView', 'same', 'FillValues', 0) > 0.5;
+end
+
+function map_out = warp_numeric_to_reference(map_in, session_ref, session_mov, registration_mode)
+if strcmpi(registration_mode, 'none')
+    map_out = map_in;
+    return;
+end
+
+[dx, dy] = estimate_final_mask_translation(session_ref.final_mask, session_mov.final_mask, registration_mode);
+valid_in = isfinite(map_in);
+map_filled = map_in;
+map_filled(~valid_in) = 0;
+
+map_shifted = imtranslate(map_filled, [dx dy], 'OutputView', 'same', 'FillValues', 0);
+valid_shifted = imtranslate(single(valid_in), [dx dy], 'OutputView', 'same', 'FillValues', 0) > 0.5;
+
+map_out = map_shifted;
+map_out(~valid_shifted) = NaN;
+end
+
+function [dx, dy] = estimate_final_mask_translation(final_mask_ref, final_mask_mov, registration_mode)
+switch lower(registration_mode)
+    case 'none'
+        dx = 0;
+        dy = 0;
+    case 'final_mask_centroid_translation'
+        c_ref = binary_mask_centroid(final_mask_ref);
+        c_mov = binary_mask_centroid(final_mask_mov);
+        dx = c_ref(1) - c_mov(1);
+        dy = c_ref(2) - c_mov(2);
+    otherwise
+        error('Unsupported registration_mode: %s', registration_mode);
+end
+end
+
+function centroid_xy = binary_mask_centroid(mask_in)
+centroid_xy = [NaN NaN];
+if any(mask_in(:))
+    [yy, xx] = find(mask_in);
+    centroid_xy = [mean(xx, 'omitnan'), mean(yy, 'omitnan')];
 end
 end
 
