@@ -5,9 +5,9 @@
 %   1. Computes dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
 %      for every trial, where F_baseline = mean(F, pre-stim frames of that trial).
 %   2. Saves each individual trial movie as  dff_ch{N}_{I}uA_trial{K}.mat
-%      (contains full dff_movie H x W x T  and  prestim_dff H x W x T_pre)
+%      (contains dff_movie H x W x T  and  t_s; use t_s < 0 for pre-stim frames)
 %   3. Averages across trials to produce    mean_dff_ch{N}_{I}uA.mat
-%      (contains mean_dff_movie and mean_prestim_dff)
+%      (same format: mean_dff_movie, t_s, final_mask)
 %   4. Saves a frame-grid figure of the mean dF/F at selected post-stim timepoints.
 %      (pre-stim dF/F is saved but not shown in the figure)
 %
@@ -110,8 +110,7 @@ full_win    = -pre_frames : post_frames;
 t_s         = full_win / Fs;
 T           = numel(full_win);
 
-baseline_idx  = t_s < 0;       % logical index into full_win for pre-stim frames
-t_s_prestim   = t_s(baseline_idx);
+baseline_idx = t_s < 0;  % logical index into t_s for pre-stim frames
 
 fprintf('Camera rate: %.2f Hz  |  Pre: %.1f s  |  Post: %.1f s  |  %d frames/trial\n', ...
     Fs, pre_sec, post_sec, T);
@@ -153,7 +152,7 @@ end
 unique_pairs = unique([channels, currents], 'rows', 'stable');
 
 results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
-                 'mean_dff_movie', {}, 'mean_prestim_dff', {}, 't_s', {}, ...
+                 'mean_dff_movie', {}, 't_s', {}, ...
                  'mean_dff_file', {}, 'trial_dff_files', {});
 
 for p = 1:size(unique_pairs, 1)
@@ -169,7 +168,6 @@ for p = 1:size(unique_pairs, 1)
     fprintf('\nChannel %d | %g uA | %d trials\n', ch, cur, n_cond);
 
     mean_movie      = zeros(H, W, T);
-    mean_prestim    = zeros(H, W, sum(baseline_idx));
     count           = 0;
     trial_dff_files = {};
 
@@ -193,18 +191,14 @@ for p = 1:size(unique_pairs, 1)
         F_baseline  = mean(stack(:,:,baseline_idx), 3);    % H x W
         dff_movie   = (stack - F_baseline) ./ F_baseline;  % H x W x T
 
-        % Pre-stim dF/F (separate slice, not shown in figure)
-        prestim_dff = dff_movie(:,:, baseline_idx);        % H x W x T_pre
-
-        % Save individual trial movie
+        % Save individual trial movie (t_s < 0 are pre-stim frames)
         trial_fname = sprintf('dff_ch%d_%guA_trial%d.mat', ch, cur, trials_cond(k));
         trial_fpath = fullfile(save_dir, trial_fname);
-        save(trial_fpath, 'dff_movie', 'prestim_dff', 't_s', 't_s_prestim', '-v7.3');
+        save(trial_fpath, 'dff_movie', 't_s', '-v7.3');
         trial_dff_files{end+1} = trial_fpath; %#ok<AGROW>
 
         % Accumulate for trial-average
-        mean_movie   = mean_movie   + dff_movie;
-        mean_prestim = mean_prestim + prestim_dff;
+        mean_movie = mean_movie + dff_movie;
         count        = count + 1;
 
     end
@@ -215,37 +209,27 @@ for p = 1:size(unique_pairs, 1)
     end
 
     % Trial-averaged dF/F; set outside-brain pixels to NaN
-    mean_movie   = mean_movie   / count;
-    mean_prestim = mean_prestim / count;
-
+    mean_movie = mean_movie / count;
     for fi = 1:T
         frame_i = mean_movie(:,:,fi);
         frame_i(~final_mask) = NaN;
         mean_movie(:,:,fi) = frame_i;
     end
-    for fi = 1:sum(baseline_idx)
-        frame_i = mean_prestim(:,:,fi);
-        frame_i(~final_mask) = NaN;
-        mean_prestim(:,:,fi) = frame_i;
-    end
 
-    % Save mean movie (full + pre-stim)
+    % Save mean movie (t_s < 0 are pre-stim frames)
     mean_fname     = sprintf('mean_dff_ch%d_%guA.mat', ch, cur);
     mean_fpath     = fullfile(save_dir, mean_fname);
-    mean_dff_movie    = mean_movie;
-    mean_prestim_dff  = mean_prestim;
-    save(mean_fpath, 'mean_dff_movie', 'mean_prestim_dff', 't_s', 't_s_prestim', ...
-         'final_mask', '-v7.3');
+    mean_dff_movie = mean_movie;
+    save(mean_fpath, 'mean_dff_movie', 't_s', 'final_mask', '-v7.3');
     fprintf('  Saved mean: %s\n', mean_fname);
 
-    results(end+1).channel          = ch;        %#ok<AGROW>
-    results(end).current_uA         = cur;
-    results(end).n_trials           = count;
-    results(end).mean_dff_movie     = mean_movie;
-    results(end).mean_prestim_dff   = mean_prestim;
-    results(end).t_s                = t_s;
-    results(end).mean_dff_file      = mean_fpath;
-    results(end).trial_dff_files    = trial_dff_files;
+    results(end+1).channel        = ch;        %#ok<AGROW>
+    results(end).current_uA      = cur;
+    results(end).n_trials        = count;
+    results(end).mean_dff_movie  = mean_movie;
+    results(end).t_s             = t_s;
+    results(end).mean_dff_file   = mean_fpath;
+    results(end).trial_dff_files = trial_dff_files;
 
 end
 
@@ -326,7 +310,7 @@ end
 % SAVE SUMMARY
 % -------------------------
 summary_file = fullfile(save_dir, 'dff_results_summary.mat');
-save(summary_file, 'results', 'final_mask', 't_s', 't_s_prestim', ...
+save(summary_file, 'results', 'final_mask', 't_s', 'baseline_idx', ...
      'Fs', 'pre_sec', 'post_sec', '-v7.3');
 
 fprintf('\nDone.\nAll outputs in:\n  %s\n', save_dir);
