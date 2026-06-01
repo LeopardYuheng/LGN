@@ -2,7 +2,7 @@
 
 Once you finish an experiment, the most important thing is to keep the data organized and unified before running analysis.
 
-This repository’s scripts pass file paths from one step to the next. Early scripts save bookkeeping files that point to image folders, setup files, CSVs, and session timing files. Later scripts load those saved paths back in and expect the data to still be in the same place.
+This repository's scripts pass file paths from one step to the next. Early scripts save bookkeeping files that point to image folders, setup files, CSVs, and session timing files. Later scripts load those saved paths back in and expect the data to still be in the same place.
 
 Because of that:
 
@@ -35,11 +35,11 @@ The key point is consistency. The scripts are easier to use when every experimen
 
 The pipeline links several data sources together:
 
-- retinotopy outputs
 - TIFF image folders
 - stimulation timing extracted from electrophysiology recordings
 - stimulation condition CSV files
 - downstream analysis outputs
+- retinotopy outputs (applied at the end, after dF/F analysis)
 
 These are not treated as isolated files. They become connected through saved `.mat` files that store metadata and paths. If one piece is moved later, the rest of the pipeline may no longer know where to find it.
 
@@ -53,33 +53,49 @@ Keeping everything unified helps with:
 
 ## After The Experiment: Analysis Order
 
-### 1. Run retinotopic mapping first
+### Pre-step A (Optional): Prepare retinotopy inputs
 
-Run [reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m).
+Run [retino_inputcombine.m](analysis/retinotopic_mapping/retino_inputcombine.m) to combine `azi.mat`, `alt.mat`, and `additional_maps.mat` into one input file (`retino_registration_ready.mat`). Only needed if those files were saved separately by the acquisition system.
 
-This step defines the reference mask and retinotopic alignment information used later by the stimulation-analysis pipeline. Downstream scripts rely on these outputs to define analysis regions such as V1 and to keep comparisons consistent across sessions.
+### Pre-step B: Draw brain boundary mask
 
-### 2. Run the numbered scripts in longitudinal stim parameter survey
+Run [draw_brain_mask_0.m](analysis/retinotopic_mapping/draw_brain_mask_0.m).
 
-Then run the scripts in numbered order in [analysis/longitudinal_stim_parameter_survey](analysis/longitudinal_stim_parameter_survey).
+This script loads a reference image averaged from the stimulation-day TIFFs and lets you draw a polygon around the brain (to exclude scalp, skull edges, and artifacts). It saves a `brain_mask.mat` file that is used by step 4 to restrict analysis to in-brain pixels.
 
-Canonical order:
+This is a lightweight script derived from `reference_mask_and_retino_alignment.m`. It does **not** require retinotopy data and does **not** draw any V1 boundary — it only defines what is brain vs. non-brain in the image.
+
+### Steps 1–3: Electrophysiology and widefield alignment
+
+Run in numbered order:
 
 1. [extract_nev_stim_and_camera_1.m](analysis/longitudinal_stim_parameter_survey/extract_nev_stim_and_camera_1.m)
 2. [align_wf_with_nev_extracted_2.m](analysis/longitudinal_stim_parameter_survey/align_wf_with_nev_extracted_2.m)
 3. [make_container_ripple_3.m](analysis/longitudinal_stim_parameter_survey/make_container_ripple_3.m)
-4. [current_thresholding_analysis_pixelwise_region_4.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_region_4.m)
-5. [compare_pixelwise_activation_across_sessions_5.m](analysis/longitudinal_stim_parameter_survey/compare_pixelwise_activation_across_sessions_5.m)
+
+### Step 4: Compute pixelwise dF/F(x,y,t) movies
+
+Run [current_thresholding_analysis_pixelwise_region_4.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_region_4.m).
+
+This step computes the full time-varying dF/F trace for every pixel, for every channel-current stimulation condition. It does **not** require retinotopic mapping or a V1 boundary — only the brain boundary mask from pre-step B.
+
+### Step 5: Retinotopic mapping and region labeling
+
+Run [reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m).
+
+After inspecting the dF/F results, this step aligns the retinotopic map to the stimulation-day image and labels which pixels belong to V1 and other visual areas. Once complete, the V1 boundary can be overlaid on the step 4 outputs.
+
+This step is intentionally placed last: you do not need to commit to a V1 boundary before you have seen the dF/F activation patterns.
 
 ## What Each Step Is Doing
 
-### Retinotopy
+### Pre-step B — Draw brain boundary mask
 
-[reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m)
+[draw_brain_mask_0.m](analysis/retinotopic_mapping/draw_brain_mask_0.m)
 
-- Defines the reference mask
-- Establishes retinotopic alignment
-- Produces the mask information used by later stimulation analyses
+- Averages a set of TIFF frames to build a clean reference image
+- Lets the user draw a polygon over the brain area interactively
+- Saves a `brain_mask.mat` containing `final_mask` (logical H×W)
 
 ### Step 1
 
@@ -106,15 +122,25 @@ Canonical order:
 
 [current_thresholding_analysis_pixelwise_region_4.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_region_4.m)
 
-- Runs the single-session pixelwise activation analysis
-- Computes threshold and activation-region summaries by channel/current
+For each channel-current stimulation condition:
 
-### Step 5
+- Computes `dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)` for every frame and pixel in the trial window, where `F_baseline(x,y)` is the mean pixel intensity over all pre-stimulation frames of that trial
+- Saves the individual dF/F movie for every trial, named `dff_ch{N}_{I}uA_trial{K}` (e.g. `dff_ch1_1uA_trial1`, `dff_ch1_1uA_trial2`, …)
+- Averages across all trials of each condition to produce a `mean_dff_movie` (H × W × T)
+- Generates frame-grid figures showing the spatial dF/F map at each post-stimulation timepoint
 
-[compare_pixelwise_activation_across_sessions_5.m](analysis/longitudinal_stim_parameter_survey/compare_pixelwise_activation_across_sessions_5.m)
+**Key difference from the previous approach:** the old pipeline collapsed dF/F to a single scalar per pixel per trial using a fixed response window (e.g. 0.4–0.6 s post-stim). The new approach preserves the full temporal trace so you can see how activation evolves over time without committing to a response window upfront.
 
-- Compares matched channel-current activation maps across sessions
-- Produces overlap and reproducibility metrics across days
+### Step 5 — Retinotopic mapping and region labeling
+
+[reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m)
+
+- Loads retinotopy output (azi, alt, VFS maps)
+- Aligns the retinotopic map to the stimulation-day image using affine registration (manual cpselect or auto + nudge)
+- Defines V1 and other visual area boundaries in stimulation-day pixel coordinates
+- Saves a unified `day_setup` struct including both the brain mask and the retinotopic alignment
+
+Once this is done, the V1 boundary and retinotopic coordinates can be overlaid on the step 4 dF/F movie outputs for region-specific interpretation.
 
 ## Important Path Behavior
 
@@ -131,4 +157,3 @@ If you need to reorganize data, do it before running the pipeline, not after.
 ## Practical Rule
 
 Once the experiment data is in place and you start running the pipeline, treat the folder locations as fixed.
-
