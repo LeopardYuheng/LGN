@@ -68,7 +68,7 @@ if isempty(regexp(date_str, '^\d{8}$', 'once'))
 end
 
 % Output folder
-analysisFolder = fullfile(fileparts(img_dir), 'analysis');
+analysisFolder = fullfile('C:\Projects\LGN_project\past wide field imaging pipeline and code(before I join)\20260326 experiment on LGN11', 'analysis');
 if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
 
 % Master V1 mask path
@@ -182,7 +182,6 @@ end
 % BUILD STIM REFERENCE MASK
 % -------------------------
 [reference_mask_struct, final_mask, stimRef] = build_reference_mask_from_img_dir(img_dir, NREF);
-
 stimRefG = mat2gray(toGrayDouble(stimRef));
 Rfixed = imref2d(size(stimRefG));
 
