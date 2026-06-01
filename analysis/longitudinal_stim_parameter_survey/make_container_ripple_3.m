@@ -22,11 +22,21 @@ cfg = struct();
 cfg.pre_sec  = 1;
 cfg.post_sec = 3;
 
-out_mat_file = 'C:\Albert Li\LGN\LGN_wf_longitudinal\LGN11_longitudinal\2026-04-24\analysis\LGN11_20260424_wf_trial_alignment.mat';
-container_name = 'LGN11_20260424_day_pointer.mat';
+% Select the wf_trial_alignment.mat produced by step 2
+[wf_name, wf_path] = uigetfile('*.mat', 'Select wf_trial_alignment.mat (from step 2)');
+if isequal(wf_name, 0), error('No file selected.'); end
+out_mat_file = fullfile(wf_path, wf_name);
+
+% Select the dataset root folder used for storing relative paths inside the container.
+% Typically the top-level folder that contains all subject/session subfolders.
+dataset_root = uigetdir(wf_path, 'Select dataset root folder');
+if isequal(dataset_root, 0), error('No dataset root selected.'); end
+
+% Output container filename — leave empty to auto-generate from subject_id + date
+container_name = '';
 
 %% ---------------- MAIN ----------------
-container_path = make_container_ripple_(out_mat_file, cfg, container_name);
+container_path = make_container_ripple_(out_mat_file, cfg, container_name, dataset_root);
 
 fprintf('\nDone.\nContainer path:\n%s\n', container_path);
 
@@ -34,13 +44,10 @@ fprintf('\nDone.\nContainer path:\n%s\n', container_path);
 % Local functions
 % ============================================================
 
-function container_path = make_container_ripple_(out_mat_file, cfg, container_name)
+function container_path = make_container_ripple_(out_mat_file, cfg, container_name, dataset_root)
 % make_container_ripple
 %
 % Single-script version of the Ripple pointer-only container builder.
-
-    % ---- FIXED ROOT ----
-    dataset_root = 'C:\Albert Li\LGN\LGN11_longitudinal';
 
     if nargin < 2 || isempty(cfg)
         cfg = struct();
