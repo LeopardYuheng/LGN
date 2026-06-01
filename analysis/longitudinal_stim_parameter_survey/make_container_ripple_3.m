@@ -27,16 +27,11 @@ cfg.post_sec = 3;
 if isequal(wf_name, 0), error('No file selected.'); end
 out_mat_file = fullfile(wf_path, wf_name);
 
-% Select the dataset root folder used for storing relative paths inside the container.
-% Typically the top-level folder that contains all subject/session subfolders.
-dataset_root = uigetdir(wf_path, 'Select dataset root folder');
-if isequal(dataset_root, 0), error('No dataset root selected.'); end
-
 % Output container filename — leave empty to auto-generate from subject_id + date
 container_name = '';
 
 %% ---------------- MAIN ----------------
-container_path = make_container_ripple_(out_mat_file, cfg, container_name, dataset_root);
+container_path = make_container_ripple_(out_mat_file, cfg, container_name);
 
 fprintf('\nDone.\nContainer path:\n%s\n', container_path);
 
@@ -44,10 +39,11 @@ fprintf('\nDone.\nContainer path:\n%s\n', container_path);
 % Local functions
 % ============================================================
 
-function container_path = make_container_ripple_(out_mat_file, cfg, container_name, dataset_root)
+function container_path = make_container_ripple_(out_mat_file, cfg, container_name)
 % make_container_ripple
 %
 % Single-script version of the Ripple pointer-only container builder.
+% All paths stored as absolute — no dataset_root needed.
 
     if nargin < 2 || isempty(cfg)
         cfg = struct();
@@ -155,16 +151,16 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         day_pointer = struct();
 
         day_pointer.meta = struct();
-        day_pointer.meta.dataset_root = dataset_root;
+        day_pointer.meta.dataset_root = '';
         day_pointer.meta.source       = 'ripple';
         day_pointer.meta.subject_id   = subject_id;
         day_pointer.meta.date_str     = date_str;
 
-        day_pointer.meta.wf_trial_alignment_file_rel = relpath(out_mat_file, dataset_root);
-        day_pointer.meta.img_dir_rel      = relpath(img_dir, dataset_root);
-        day_pointer.meta.day_setup_file_rel = relpath(day_setup_file, dataset_root);        
-        day_pointer.meta.session_mat_rel  = relpath(session_mat, dataset_root);
-        day_pointer.meta.csv_file_rel     = relpath(csv_file, dataset_root);
+        day_pointer.meta.wf_trial_alignment_file_rel = out_mat_file;
+        day_pointer.meta.img_dir_rel      = img_dir;
+        day_pointer.meta.day_setup_file_rel = day_setup_file;
+        day_pointer.meta.session_mat_rel  = session_mat;
+        day_pointer.meta.csv_file_rel     = csv_file;
 
         day_pointer.meta.created_at = char(datetime('now'));
         day_pointer.meta.updated_at = day_pointer.meta.created_at;
@@ -211,10 +207,10 @@ function container_path = make_container_ripple_(out_mat_file, cfg, container_na
         entry.trial_index = trial_idx(idx);
         entry.trial_onset_frame_idx = onset(idx);
 
-        entry.img_dir_rel = relpath(img_dir, dataset_root);
+        entry.img_dir_rel = img_dir;
 
         entry.provenance = struct();
-        entry.provenance.source_out_mat_rel = relpath(out_mat_file, dataset_root);
+        entry.provenance.source_out_mat_rel = out_mat_file;
         entry.provenance.updated_at = char(datetime('now'));
 
         % Overwrite existing key if present

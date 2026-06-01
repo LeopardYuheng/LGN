@@ -82,8 +82,13 @@ fprintf('Brain mask loaded: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask
 
 %% -------------------------
 % RESOLVE IMAGE DIRECTORY
+% img_dir_rel stores the absolute path when data and analysis are on
+% separate drives; resolve_file_path uses it directly in that case.
 % -------------------------
-dataset_root = day_pointer.meta.dataset_root;
+dataset_root = '';
+if isfield(day_pointer.meta, 'dataset_root')
+    dataset_root = day_pointer.meta.dataset_root;
+end
 img_dir = resolve_file_path(day_pointer.meta.img_dir_rel, dataset_root, 'dir');
 fprintf('Image directory:\n  %s\n', img_dir);
 
