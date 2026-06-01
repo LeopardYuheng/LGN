@@ -33,8 +33,8 @@ img_dir = uigetdir(pwd, 'Select folder containing TIFF frames');
 if isequal(img_dir,0), error('No image folder selected.'); end
 
 [setup_name, setup_path] = uigetfile('*.mat', ...
-    'Select {subject}_{date}_reference_mask_and_retino_alignment.mat');
-if isequal(setup_name,0), error('No day setup file selected.'); end
+    'Select brain_mask.mat  OR  day_setup.mat');
+if isequal(setup_name,0), error('No setup file selected.'); end
 setup_file = fullfile(setup_path, setup_name);
 
 [ses_name, ses_path] = uigetfile('*.mat', ...
@@ -53,16 +53,33 @@ csv_file = fullfile(csv_path, csv_name);
 
 D = load(setup_file);
 
-if isfield(D,'day_setup')
+retino_available = false;
+if isfield(D, 'day_setup')
+    % Full day_setup from reference_mask_and_retino_alignment.m or retino_alignment_with_brain_mask.m
     day_setup = D.day_setup;
+    assert(isfield(day_setup,'reference_mask') && isfield(day_setup.reference_mask,'final_mask'), ...
+        'day_setup.reference_mask.final_mask missing.');
+    final_mask = logical(day_setup.reference_mask.final_mask);
+    if isfield(day_setup, 'retino_align') && ~isempty(fieldnames(day_setup.retino_align))
+        retino_available = true;
+    else
+        warning('day_setup.retino_align missing or empty — retino fields will not be stored in output.');
+    end
+elseif isfield(D, 'reference_mask_struct')
+    % brain_mask.mat from draw_brain_mask_0.m (no retino alignment yet)
+    reference_mask_struct = D.reference_mask_struct;
+    assert(isfield(reference_mask_struct,'final_mask'), ...
+        'reference_mask_struct.final_mask missing. Is this a valid brain_mask.mat?');
+    final_mask = logical(reference_mask_struct.final_mask);
+    day_setup = struct();
+    day_setup.reference_mask = reference_mask_struct;
+    if isfield(D,'subject_id'), day_setup.subject_id = D.subject_id; end
+    if isfield(D,'date_str'),   day_setup.date_str   = D.date_str;   end
+    if isfield(D,'img_dir'),    day_setup.img_dir    = D.img_dir;    end
+    fprintf('Loaded brain_mask.mat — no retino alignment. Retino fields will be empty in output.\n');
 else
-    error('Selected setup file must contain variable "day_setup".');
+    error('Selected file must contain "day_setup" (full setup) or "reference_mask_struct" (brain_mask.mat).');
 end
-
-assert(isfield(day_setup,'reference_mask') && isfield(day_setup.reference_mask,'final_mask'), ...
-    'day_setup.reference_mask.final_mask missing.');
-assert(isfield(day_setup,'retino_align'), ...
-    'day_setup.retino_align missing.');
 
 final_mask = logical(day_setup.reference_mask.final_mask);
 
@@ -656,7 +673,7 @@ if isfield(day_setup.reference_mask,'ref_img')
     end
 end
 
-if isfield(day_setup.retino_align,'V1_mask_stim') && ~isempty(day_setup.retino_align.V1_mask_stim)
+if retino_available && isfield(day_setup.retino_align,'V1_mask_stim') && ~isempty(day_setup.retino_align.V1_mask_stim)
     if ~isequal(size(day_setup.retino_align.V1_mask_stim), size(final_mask))
         warning('V1_mask_stim size does not match final_mask size.');
     end
@@ -718,18 +735,21 @@ out.mask_size = size(final_mask);
 out.crop_rect = crop_rect;
 
 out.reference_mask = day_setup.reference_mask;
-out.retino_align   = day_setup.retino_align;
+out.final_mask     = day_setup.reference_mask.final_mask;
 
-out.final_mask = day_setup.reference_mask.final_mask;
-
-if isfield(day_setup.retino_align,'V1_mask_stim')
-    out.V1_mask_stim = day_setup.retino_align.V1_mask_stim;
-end
-if isfield(day_setup.retino_align,'azi_stim')
-    out.azi_stim = day_setup.retino_align.azi_stim;
-end
-if isfield(day_setup.retino_align,'alt_stim')
-    out.alt_stim = day_setup.retino_align.alt_stim;
+if retino_available
+    out.retino_align = day_setup.retino_align;
+    if isfield(day_setup.retino_align,'V1_mask_stim')
+        out.V1_mask_stim = day_setup.retino_align.V1_mask_stim;
+    end
+    if isfield(day_setup.retino_align,'azi_stim')
+        out.azi_stim = day_setup.retino_align.azi_stim;
+    end
+    if isfield(day_setup.retino_align,'alt_stim')
+        out.alt_stim = day_setup.retino_align.alt_stim;
+    end
+else
+    out.retino_align = struct();
 end
 
 % SMA2 bookkeeping

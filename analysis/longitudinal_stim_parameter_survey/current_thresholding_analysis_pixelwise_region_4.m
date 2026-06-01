@@ -1,24 +1,43 @@
-%% current_thresholding_analysis_pixelwise_region.m
-% Pixelwise threshold analysis with cluster-defined activation regions.
+%% current_thresholding_analysis_pixelwise_region_4.m
+% Step 4: Pixelwise dF/F(x,y,t) movie computation.
+%
+% For each channel-current stimulation condition this script:
+%   1. Computes dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
+%      for every trial, where F_baseline = mean(F, pre-stim frames of that trial).
+%   2. Saves each individual trial movie as  dff_ch{N}_{I}uA_trial{K}.mat
+%      (contains full dff_movie H x W x T  and  prestim_dff H x W x T_pre)
+%   3. Averages across trials to produce    mean_dff_ch{N}_{I}uA.mat
+%      (contains mean_dff_movie and mean_prestim_dff)
+%   4. Saves a frame-grid figure of the mean dF/F at selected post-stim timepoints.
+%      (pre-stim dF/F is saved but not shown in the figure)
+%
+% Requires:
+%   - Day pointer .mat  (from make_container_ripple_3.m)
+%   - brain_mask.mat    (from draw_brain_mask_0.m)
+%
+% display_step_s controls the figure grid spacing only; all frames are always
+% saved in the .mat files. At 10 Hz with display_step_s = 0.3, the figure
+% shows frames at t = 0, 0.3, 0.6, ... s post-stim.
 
 close all; clc; clear; fclose('all');
 
 %% -------------------------
-% USER OPTIONS
+% USER SETTINGS
 % -------------------------
-response_sec = [0.4 0.6]; % Used when computing the mean evoked ΔF/F map
-alpha = 0.05;  %A pixel is considered “active” if its response is unlikely under baseline noise (p < 0.05).
-min_cluster_size = 200; % Removes noise / isolated pixels that pass threshold by chance
-conn = 8;
 
-use_analysis_mask_for_stats = true;
-mask_outside_for_display = true;
-use_shared_clim = true;
-shared_clim = [];
+% Output folder for all saved .mat files and figures
+save_dir = 'C:\Projects\LGN_project\wide field analysis result\LGN11_20260326_experiment\analysis\dff_movies';
 
-% Consistency filter (per-pixel activation frequency)
-consistency_k = 1.0;     % pixel considered active on a trial if trial value > base_mean + k*base_std
-consistency_thresh = 0.38; % require cluster mean activation_fraction >= 0.5
+% Spacing between displayed frames in the frame-grid figure (seconds).
+% Does NOT affect what is saved — all frames are always saved.
+display_step_s = 0.3;
+
+% Color limits for the dF/F figures.
+% use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
+%                          of the data, so it always matches the signal range.
+% use_auto_clim = false : use the fixed range in manual_clim below.
+use_auto_clim = true;
+manual_clim   = [-0.02  0.02];
 
 %% -------------------------
 % LOAD DAY POINTER
@@ -35,42 +54,37 @@ else
     error('Selected file must contain "day_pointer" or legacy variable "C".');
 end
 
-assert(isfield(day_pointer, 'meta'), 'day_pointer.meta missing.');
-assert(isfield(day_pointer, 'cfg'), 'day_pointer.cfg missing.');
+assert(isfield(day_pointer, 'meta'),    'day_pointer.meta missing.');
+assert(isfield(day_pointer, 'cfg'),     'day_pointer.cfg missing.');
 assert(isfield(day_pointer, 'entries') && ~isempty(day_pointer.entries), ...
     'day_pointer.entries missing or empty.');
 
 %% -------------------------
-% RESOLVE INPUT PATHS
+% LOAD BRAIN MASK
+% -------------------------
+[mask_fn, mask_fp] = uigetfile('*.mat', 'Select brain_mask.mat');
+if isequal(mask_fn, 0), error('No brain mask selected.'); end
+
+M = load(fullfile(mask_fp, mask_fn));
+assert(isfield(M, 'reference_mask_struct') && isfield(M.reference_mask_struct, 'final_mask'), ...
+    'Selected file does not contain reference_mask_struct.final_mask. Did you run draw_brain_mask_0.m?');
+
+final_mask = logical(M.reference_mask_struct.final_mask);
+[H, W]     = size(final_mask);
+fprintf('Brain mask loaded: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask(:)));
+
+%% -------------------------
+% RESOLVE IMAGE DIRECTORY
 % -------------------------
 dataset_root = day_pointer.meta.dataset_root;
-day_setup_file = resolve_file_path(day_pointer.meta.day_setup_file_rel, dataset_root, 'file');
 img_dir = resolve_file_path(day_pointer.meta.img_dir_rel, dataset_root, 'dir');
-
-fprintf('Resolved day_setup_file:\n  %s\n', day_setup_file);
-fprintf('Resolved img_dir:\n  %s\n', img_dir);
+fprintf('Image directory:\n  %s\n', img_dir);
 
 %% -------------------------
-% LOAD DAY SETUP
-% -------------------------
-D = load(day_setup_file);
-assert(isfield(D, 'day_setup'), 'day_setup missing from file.');
-day_setup = D.day_setup;
-
-final_mask = logical(day_setup.reference_mask.final_mask);
-V1_mask = logical(day_setup.retino_align.V1_mask_stim);
-analysis_mask = final_mask & V1_mask;
-
-azi_stim = day_setup.retino_align.azi_stim;
-alt_stim = day_setup.retino_align.alt_stim;
-
-[H, W] = size(analysis_mask);
-
-%% -------------------------
-% LOAD TIFF FILES
+% LOAD AND SORT TIFF FILES
 % -------------------------
 image_files = [dir(fullfile(img_dir, '*.tif')); dir(fullfile(img_dir, '*.tiff'))];
-assert(~isempty(image_files), 'No TIFFs found.');
+assert(~isempty(image_files), 'No TIFF files found in:\n  %s', img_dir);
 
 nums = nan(numel(image_files), 1);
 for i = 1:numel(image_files)
@@ -78,535 +92,273 @@ for i = 1:numel(image_files)
     assert(~isempty(tok), 'Filename missing trailing numeric index: %s', image_files(i).name);
     nums(i) = str2double(tok{1});
 end
-[~, ord] = sort(nums);
+[~, ord]    = sort(nums);
 image_files = image_files(ord);
-nFrames = numel(image_files);
+nFrames     = numel(image_files);
+fprintf('Total TIFF frames: %d\n', nFrames);
 
 %% -------------------------
-% TIMING FROM DAY POINTER
+% TIMING
 % -------------------------
-Fs = infer_camera_rate(day_pointer);
-pre_sec = double(day_pointer.cfg.pre_sec);
+Fs       = infer_camera_rate(day_pointer);
+pre_sec  = double(day_pointer.cfg.pre_sec);
 post_sec = double(day_pointer.cfg.post_sec);
 
-pre_frames = round(pre_sec * Fs);
+pre_frames  = round(pre_sec  * Fs);
 post_frames = round(post_sec * Fs);
-full_win = -pre_frames:post_frames;
-t_s = full_win / Fs;
+full_win    = -pre_frames : post_frames;
+t_s         = full_win / Fs;
+T           = numel(full_win);
 
-baseline_idx = t_s < 0;
-response_idx = t_s > response_sec(1) & t_s <= response_sec(2);
+baseline_idx  = t_s < 0;       % logical index into full_win for pre-stim frames
+t_s_prestim   = t_s(baseline_idx);
+
+fprintf('Camera rate: %.2f Hz  |  Pre: %.1f s  |  Post: %.1f s  |  %d frames/trial\n', ...
+    Fs, pre_sec, post_sec, T);
 
 %% -------------------------
-% RECONSTRUCT PER-TRIAL VECTORS
+% UNPACK TRIAL INFORMATION
 % -------------------------
 [frame_idx, channels, currents, trial_index] = unpack_day_pointer_entries(day_pointer.entries);
 
 valid = isfinite(frame_idx) & isfinite(channels) & isfinite(currents) & ...
         frame_idx > pre_frames & frame_idx <= (nFrames - post_frames);
 
-frame_idx = frame_idx(valid);
-channels = channels(valid);
-currents = currents(valid);
+frame_idx   = frame_idx(valid);
+channels    = channels(valid);
+currents    = currents(valid);
 trial_index = trial_index(valid);
 
-unique_channels = unique(channels);
+fprintf('Valid trials: %d\n', sum(valid));
 
 %% -------------------------
-% GLOBAL DISPLAY LIMITS
+% CREATE OUTPUT DIRECTORY
 % -------------------------
-pad_xy = 10;
-[y_v1, x_v1] = find(V1_mask);
-global_v1_xlim = [max(1, min(x_v1) - pad_xy), min(size(V1_mask,2), max(x_v1) + pad_xy)];
-global_v1_ylim = [max(1, min(y_v1) - pad_xy), min(size(V1_mask,1), max(y_v1) + pad_xy)];
+if ~exist(save_dir, 'dir'), mkdir(save_dir); end
+fprintf('Output directory:\n  %s\n', save_dir);
 
 %% -------------------------
-% MAIN ANALYSIS
+% FRAME DISPLAY SELECTION
+% Frames shown in the figure at t = 0, display_step_s, 2*display_step_s, ...
 % -------------------------
-results = struct( ...
-    'channel', {}, ...
-    'threshold_uA', {}, ...
-    'anchor_current_uA', {}, ...
-    'peak_xy', {}, ...
-    'azi', {}, ...
-    'alt', {}, ...
-    'current_summary', {}, ...
-    'anchor_mean_map', {}, ...
-    'threshold_cluster_mask', {}, ...
-    'threshold_mean_map', {}, ...
-    'threshold_peak_xy', {} );
+display_t_post    = 0 : display_step_s : post_sec;
+display_frame_idx = zeros(size(display_t_post));
+for di = 1:numel(display_t_post)
+    [~, display_frame_idx(di)] = min(abs(t_s - display_t_post(di)));
+end
 
-all_anchor_vals = [];
+%% -------------------------
+% MAIN LOOP — one pass per (channel, current) condition
+% -------------------------
+unique_pairs = unique([channels, currents], 'rows', 'stable');
 
-for ch_i = 1:numel(unique_channels)
-    ch = unique_channels(ch_i);
-    idx_ch = channels == ch;
-    currents_ch = sort(unique(currents(idx_ch)));
+results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
+                 'mean_dff_movie', {}, 'mean_prestim_dff', {}, 't_s', {}, ...
+                 'mean_dff_file', {}, 'trial_dff_files', {});
 
-    if ~any(currents_ch == 0)
+for p = 1:size(unique_pairs, 1)
+
+    ch  = unique_pairs(p, 1);
+    cur = unique_pairs(p, 2);
+
+    idx_cond    = (channels == ch) & (currents == cur);
+    onsets_cond = frame_idx(idx_cond);
+    trials_cond = trial_index(idx_cond);
+    n_cond      = numel(onsets_cond);
+
+    fprintf('\nChannel %d | %g uA | %d trials\n', ch, cur, n_cond);
+
+    mean_movie      = zeros(H, W, T);
+    mean_prestim    = zeros(H, W, sum(baseline_idx));
+    count           = 0;
+    trial_dff_files = {};
+
+    for k = 1:n_cond
+
+        f      = onsets_cond(k);
+        frames = f + full_win;
+
+        if any(frames < 1) || any(frames > nFrames)
+            fprintf('  Trial %d: frame window out of bounds — skipped.\n', trials_cond(k));
+            continue;
+        end
+
+        % Load frame stack for this trial
+        stack = zeros(H, W, T);
+        for fi = 1:T
+            stack(:,:,fi) = double(imread(fullfile(img_dir, image_files(frames(fi)).name)));
+        end
+
+        % dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
+        F_baseline  = mean(stack(:,:,baseline_idx), 3);    % H x W
+        dff_movie   = (stack - F_baseline) ./ F_baseline;  % H x W x T
+
+        % Pre-stim dF/F (separate slice, not shown in figure)
+        prestim_dff = dff_movie(:,:, baseline_idx);        % H x W x T_pre
+
+        % Save individual trial movie
+        trial_fname = sprintf('dff_ch%d_%guA_trial%d.mat', ch, cur, trials_cond(k));
+        trial_fpath = fullfile(save_dir, trial_fname);
+        save(trial_fpath, 'dff_movie', 'prestim_dff', 't_s', 't_s_prestim', '-v7.3');
+        trial_dff_files{end+1} = trial_fpath; %#ok<AGROW>
+
+        % Accumulate for trial-average
+        mean_movie   = mean_movie   + dff_movie;
+        mean_prestim = mean_prestim + prestim_dff;
+        count        = count + 1;
+
+    end
+
+    if count == 0
+        fprintf('  No valid trials — condition skipped.\n');
         continue;
     end
 
-    idx_base = idx_ch & currents == 0;
-    base_maps = build_trial_response_map_stack(frame_idx(idx_base), img_dir, image_files, ...
-        full_win, baseline_idx, response_idx, H, W);
-    if isempty(base_maps)
-        continue;
+    % Trial-averaged dF/F; set outside-brain pixels to NaN
+    mean_movie   = mean_movie   / count;
+    mean_prestim = mean_prestim / count;
+
+    for fi = 1:T
+        frame_i = mean_movie(:,:,fi);
+        frame_i(~final_mask) = NaN;
+        mean_movie(:,:,fi) = frame_i;
+    end
+    for fi = 1:sum(baseline_idx)
+        frame_i = mean_prestim(:,:,fi);
+        frame_i(~final_mask) = NaN;
+        mean_prestim(:,:,fi) = frame_i;
     end
 
-    current_summary = struct( ...
-        'current_uA', {}, 'n_trials', {}, 'mean_evoked_map', {}, 'p_map', {}, ...
-        'sig_pixel_mask', {}, 'sig_cluster_mask', {}, 'largest_cluster_mask', {}, ...
-        'largest_cluster_size', {}, 'fraction_activated', {}, ...
-        'mean_cluster_effect', {}, 'activation_fraction', {}, 'mean_activation_fraction', {}, 'pass_consistency', {}, 'has_cluster', {} );
+    % Save mean movie (full + pre-stim)
+    mean_fname     = sprintf('mean_dff_ch%d_%guA.mat', ch, cur);
+    mean_fpath     = fullfile(save_dir, mean_fname);
+    mean_dff_movie    = mean_movie;
+    mean_prestim_dff  = mean_prestim;
+    save(mean_fpath, 'mean_dff_movie', 'mean_prestim_dff', 't_s', 't_s_prestim', ...
+         'final_mask', '-v7.3');
+    fprintf('  Saved mean: %s\n', mean_fname);
 
-    threshold_uA = NaN;
-    anchor_current_uA = max(currents_ch(currents_ch > 0));
-    if isempty(anchor_current_uA), anchor_current_uA = 0; end
-    anchor_mean_map = [];
-    peak_xy = [NaN NaN];
-    azi_val = NaN;
-    alt_val = NaN;
-    threshold_cluster_mask = false(H, W);
-    threshold_mean_map = [];
-    threshold_peak_xy = [NaN NaN];
+    results(end+1).channel          = ch;        %#ok<AGROW>
+    results(end).current_uA         = cur;
+    results(end).n_trials           = count;
+    results(end).mean_dff_movie     = mean_movie;
+    results(end).mean_prestim_dff   = mean_prestim;
+    results(end).t_s                = t_s;
+    results(end).mean_dff_file      = mean_fpath;
+    results(end).trial_dff_files    = trial_dff_files;
 
-    for cur_i = 1:numel(currents_ch)
-        cur = currents_ch(cur_i);
-        if cur == 0, continue; end
-
-        idx_cur = idx_ch & currents == cur;
-        cur_maps = build_trial_response_map_stack(frame_idx(idx_cur), img_dir, image_files, ...
-            full_win, baseline_idx, response_idx, H, W);
-        if isempty(cur_maps), continue; end
-
-        mean_evoked_map = mean(cur_maps, 3, 'omitnan');
-        p_map = compute_pixelwise_p_map(cur_maps, base_maps, analysis_mask, final_mask, use_analysis_mask_for_stats);
-        if use_analysis_mask_for_stats
-            stat_mask = analysis_mask;
-        else
-            stat_mask = final_mask;
-        end
-
-        sig_pixel_mask = (p_map < alpha) & (mean_evoked_map > 0) & stat_mask;
-        [sig_cluster_mask, largest_cluster_mask, largest_cluster_size] = ...
-            cluster_filter_mask(sig_pixel_mask, conn, min_cluster_size, H, W);
-
-        % per-pixel activation frequency across trials
-        % active on a trial if trial value > base_mean + consistency_k * base_std
-        base_mean_map = mean(base_maps, 3, 'omitnan');
-        base_std_map = std(base_maps, 0, 3, 'omitnan');
-        % build logical HxWxN map: active_trials(:,:,ti)
-        n_cur = size(cur_maps, 3);
-        active_trials = false(H, W, n_cur);
-        for ti = 1:n_cur
-            active_trials(:,:,ti) = cur_maps(:,:,ti) > (base_mean_map + consistency_k .* base_std_map);
-        end
-        activation_fraction = mean(active_trials, 3, 'omitnan');
-
-        has_cluster = any(sig_cluster_mask(:));
-        fraction_activated = sum(sig_cluster_mask(:)) / sum(stat_mask(:));
-        mean_cluster_effect = mean(mean_evoked_map(sig_cluster_mask), 'omitnan');
-        if ~has_cluster, mean_cluster_effect = NaN; end
-
-        % cluster-level consistency: mean activation_fraction across cluster pixels
-        if has_cluster
-            mean_activation_fraction = mean(activation_fraction(sig_cluster_mask), 'omitnan');
-        else
-            mean_activation_fraction = 0;
-        end
-        pass_consistency = mean_activation_fraction >= consistency_thresh;
-        % final decision: require consistency in addition to cluster presence
-        has_cluster = has_cluster && pass_consistency;
-
-        if cur == anchor_current_uA
-            anchor_mean_map = mean_evoked_map;
-            all_anchor_vals = [all_anchor_vals; mean_evoked_map(isfinite(mean_evoked_map))]; %#ok<AGROW>
-        end
-
-        if isnan(threshold_uA) && has_cluster
-            threshold_uA = cur;
-            threshold_cluster_mask = largest_cluster_mask;
-            threshold_mean_map = mean_evoked_map;
-            if mask_outside_for_display
-                threshold_mean_map(~final_mask) = NaN;
-            end
-        end
-
-        current_summary(end+1).current_uA = cur;
-        current_summary(end).n_trials = size(cur_maps, 3);
-        current_summary(end).mean_evoked_map = mean_evoked_map;
-        current_summary(end).p_map = p_map;
-        current_summary(end).sig_pixel_mask = sig_pixel_mask;
-        current_summary(end).sig_cluster_mask = sig_cluster_mask;
-        current_summary(end).largest_cluster_mask = largest_cluster_mask;
-        current_summary(end).largest_cluster_size = largest_cluster_size;
-        current_summary(end).fraction_activated = fraction_activated;
-        current_summary(end).mean_cluster_effect = mean_cluster_effect;
-        current_summary(end).activation_fraction = activation_fraction;
-        current_summary(end).mean_activation_fraction = mean_activation_fraction;
-        current_summary(end).pass_consistency = pass_consistency;
-        current_summary(end).has_cluster = has_cluster;
-    end
-
-    if isempty(anchor_mean_map)
-        anchor_mean_map = mean(base_maps, 3, 'omitnan');
-    end
-    if mask_outside_for_display
-        anchor_mean_map(~final_mask) = NaN;
-    end
-
-    if ~isempty(current_summary) && ~isnan(threshold_uA)
-        idx_thr = find([current_summary.current_uA] == threshold_uA, 1);
-        region_for_peak = current_summary(idx_thr).largest_cluster_mask;
-        search_map = anchor_mean_map;
-        search_map(~region_for_peak) = NaN;
-        if any(isfinite(search_map(:)))
-            [~, idx_max] = max(search_map(:));
-            [y_peak, x_peak] = ind2sub(size(search_map), idx_max);
-            peak_xy = [x_peak, y_peak];
-            threshold_peak_xy = [x_peak, y_peak];
-            azi_val = azi_stim(y_peak, x_peak);
-            alt_val = alt_stim(y_peak, x_peak);
-        end
-    end
-
-    results(end+1).channel = ch;
-    results(end).threshold_uA = threshold_uA;
-    results(end).anchor_current_uA = anchor_current_uA;
-    results(end).peak_xy = peak_xy;
-    results(end).azi = azi_val;
-    results(end).alt = alt_val;
-    results(end).current_summary = current_summary;
-    results(end).anchor_mean_map = anchor_mean_map;
-    results(end).threshold_cluster_mask = threshold_cluster_mask;
-    results(end).threshold_mean_map = threshold_mean_map;
-    results(end).threshold_peak_xy = threshold_peak_xy;
 end
 
 %% -------------------------
-% OUTPUT DIRECTORY
+% COLOR LIMITS
+% Auto: symmetric around 0, scaled to 1st/99th percentile across all conditions.
 % -------------------------
-save_dir = fullfile(img_dir, '..', 'analysis', 'pixelwise_threshold_region_analysis');
-if ~exist(save_dir, 'dir')
-    mkdir(save_dir);
-end
-
-%% -------------------------
-% DISPLAY LIMITS
-% -------------------------
-if use_shared_clim && ~isempty(shared_clim)
-    clim_to_use = shared_clim;
-else
-    q = quantile(all_anchor_vals, [0.02 0.98]);
-    m = max(abs(q));
-    if ~isfinite(m) || m == 0, m = 0.01; end
-    clim_to_use = [-m m];
-end
-
-%% -------------------------
-% PLOT PER-CHANNEL THRESHOLD SUMMARIES
-% -------------------------
-for res_idx = 1:numel(results)
-    ch = results(res_idx).channel;
-
-    fig_summary = figure('Color', 'w', 'Name', sprintf('Pixelwise threshold summary ch%d', ch), ...
-        'Position', [80 80 1300 500]);
-
-    subplot(1,3,1);
-    imagesc(results(res_idx).anchor_mean_map); axis image off; set(gca,'YDir','normal');
-    xlim(global_v1_xlim); ylim(global_v1_ylim); colormap(gca, parula); caxis(clim_to_use); hold on;
-    visboundaries(V1_mask, 'Color', 'w', 'LineWidth', 1.0);
-    visboundaries(final_mask, 'Color', 'y', 'LineWidth', 1.0);
-    title(sprintf('Anchor mean map\nCh %d | %g uA', ch, results(res_idx).anchor_current_uA), 'Interpreter', 'none');
-    colorbar;
-
-    subplot(1,3,2);
-    if ~isempty(results(res_idx).threshold_mean_map)
-        M = results(res_idx).threshold_mean_map;
+if use_auto_clim
+    all_vals = [];
+    for r = 1:numel(results)
+        m = results(r).mean_dff_movie;
+        all_vals = [all_vals; m(isfinite(m))]; %#ok<AGROW>
+    end
+    if ~isempty(all_vals)
+        q           = quantile(all_vals, [0.01 0.99]);
+        clim_to_use = [-max(abs(q))  max(abs(q))];
     else
-        M = results(res_idx).anchor_mean_map;
-    end
-    imagesc(M); axis image off; set(gca,'YDir','normal');
-    xlim(global_v1_xlim); ylim(global_v1_ylim); colormap(gca, parula); caxis(clim_to_use); hold on;
-    visboundaries(V1_mask, 'Color', 'w', 'LineWidth', 1.0);
-    visboundaries(final_mask, 'Color', 'y', 'LineWidth', 1.0);
-    if any(results(res_idx).threshold_cluster_mask(:))
-        visboundaries(results(res_idx).threshold_cluster_mask & final_mask, 'Color', 'r', 'LineWidth', 1.8);
-    end
-    title(sprintf('Threshold region\nCh %d | %g uA', ch, results(res_idx).threshold_uA), 'Interpreter', 'none');
-    colorbar;
-
-    subplot(1,3,3);
-    cur_vals = [results(res_idx).current_summary.current_uA];
-    has_cluster = double([results(res_idx).current_summary.has_cluster]);
-    largest_cluster = [results(res_idx).current_summary.largest_cluster_size];
-    yyaxis left; plot(cur_vals, has_cluster, '-o', 'LineWidth', 1.5); ylabel('Has significant region'); ylim([-0.05 1.05]);
-    yyaxis right; plot(cur_vals, largest_cluster, '-s', 'LineWidth', 1.5); ylabel('Largest cluster size');
-    xlabel('Current (uA)'); title(sprintf('Threshold = %g uA', results(res_idx).threshold_uA)); grid on;
-
-    exportgraphics(fig_summary, fullfile(save_dir, sprintf('channel_%d_pixelwise_threshold_summary.png', ch)), 'Resolution', 200);
-
-    activated_idx = find([results(res_idx).current_summary.has_cluster]);
-    if ~isempty(activated_idx)
-        fig_multi = figure('Color', 'w', 'Name', sprintf('Pixelwise activated currents ch%d', ch), ...
-            'Position', [100 100 760 520]);
-        ax_cur = axes(fig_multi);
-        imagesc(ax_cur, results(res_idx).anchor_mean_map);
-        axis(ax_cur, 'image');
-        axis(ax_cur, 'off');
-        set(ax_cur, 'YDir', 'normal');
-        xlim(ax_cur, global_v1_xlim);
-        ylim(ax_cur, global_v1_ylim);
-        colormap(ax_cur, parula);
-        caxis(ax_cur, clim_to_use);
-        hold(ax_cur, 'on');
-        visboundaries(ax_cur, V1_mask, 'Color', 'w', 'LineWidth', 1.0);
-        visboundaries(ax_cur, final_mask, 'Color', 'y', 'LineWidth', 1.0);
-
-        cmap_cur = lines(numel(activated_idx));
-        legend_handles = gobjects(0);
-        legend_labels = {};
-        for a_i = 1:numel(activated_idx)
-            cs = results(res_idx).current_summary(activated_idx(a_i));
-            if any(cs.sig_cluster_mask(:))
-                B = bwboundaries(cs.sig_cluster_mask & final_mask, conn, 'noholes');
-                for b_i = 1:numel(B)
-                    boundary = B{b_i};
-                    plot(ax_cur, boundary(:,2), boundary(:,1), '-', ...
-                        'Color', cmap_cur(a_i,:), 'LineWidth', 2);
-                end
-            end
-            legend_handles(end+1) = plot(ax_cur, nan, nan, '-', ...
-                'Color', cmap_cur(a_i,:), 'LineWidth', 2);
-            legend_labels{end+1} = sprintf('%g uA', cs.current_uA); %#ok<AGROW>
-        end
-        title(ax_cur, sprintf('Ch %d | activated currents overlay', ch), 'Interpreter', 'none');
-        if ~isempty(legend_handles)
-            legend(ax_cur, legend_handles, legend_labels, 'Location', 'eastoutside', 'Box', 'off');
-        end
-        colorbar(ax_cur);
-        exportgraphics(fig_multi, fullfile(save_dir, sprintf('channel_%d_pixelwise_activated_currents.png', ch)), 'Resolution', 200);
-    end
-end
-
-%% -------------------------
-% THRESHOLD BORDER SUMMARY
-% -------------------------
-valid_thr = arrayfun(@(r) isfinite(r.threshold_uA) && any(r.threshold_cluster_mask(:)), results);
-if any(valid_thr)
-    valid_results = results(valid_thr);
-    threshold_levels = sort(unique([valid_results.threshold_uA]));
-    n_levels = numel(threshold_levels);
-    n_cols = min(3, n_levels);
-    n_rows = ceil(n_levels / n_cols);
-    fig_vf = figure('Color', 'w', 'Name', 'Pixelwise threshold borders by current');
-    tiledlayout(n_rows, n_cols, 'TileSpacing', 'compact', 'Padding', 'compact');
-    cmap = lines(max(numel(valid_results),1));
-
-    for lvl_i = 1:n_levels
-        thr = threshold_levels(lvl_i);
-        ax = nexttile;
-        imagesc(ax, double(final_mask)); axis(ax, 'image'); axis(ax, 'off'); set(ax, 'YDir', 'normal');
-        xlim(ax, global_v1_xlim); ylim(ax, global_v1_ylim); colormap(ax, gray); caxis(ax, [0 1]); hold(ax, 'on');
-        visboundaries(ax, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
-        visboundaries(ax, final_mask, 'Color', 'y', 'LineWidth', 1.2);
-
-        idx_thr = find([valid_results.threshold_uA] == thr);
-        legend_handles = gobjects(0);
-        legend_labels = {};
-        for j = 1:numel(idx_thr)
-            r_idx = idx_thr(j);
-            mask_i = valid_results(r_idx).threshold_cluster_mask & final_mask;
-            B = bwboundaries(mask_i, conn, 'noholes');
-            for b_i = 1:numel(B)
-                boundary = B{b_i};
-                patch(ax, boundary(:,2), boundary(:,1), cmap(r_idx,:), ...
-                    'FaceAlpha', 0.12, 'EdgeColor', cmap(r_idx,:), 'LineWidth', 2);
-            end
-            legend_handles(end+1) = plot(ax, nan, nan, 'o', 'MarkerFaceColor', cmap(r_idx,:), ...
-                'MarkerEdgeColor', 'k', 'MarkerSize', 6, 'LineStyle', 'none');
-            legend_labels{end+1} = sprintf('Ch %d', valid_results(r_idx).channel); %#ok<AGROW>
-        end
-        title(ax, sprintf('Threshold %g uA', thr), 'Interpreter', 'none');
-        if ~isempty(legend_handles)
-            legend(ax, legend_handles, legend_labels, 'Location', 'southoutside', 'Box', 'off');
-        end
-    end
-
-    exportgraphics(fig_vf, fullfile(save_dir, 'pixelwise_threshold_border_summary.png'), 'Resolution', 200);
-end
-
-%% -------------------------
-% ALL SIGNIFICANT ACTIVATIONS BY CURRENT
-% -------------------------
-all_sig_currents = [];
-for r_i = 1:numel(results)
-    if isempty(results(r_i).current_summary)
-        continue;
-    end
-    active_idx = find([results(r_i).current_summary.has_cluster]);
-    if ~isempty(active_idx)
-        all_sig_currents = [all_sig_currents, [results(r_i).current_summary(active_idx).current_uA]]; %#ok<AGROW>
-    end
-end
-
-all_sig_currents = sort(unique(all_sig_currents));
-if ~isempty(all_sig_currents)
-    n_levels = numel(all_sig_currents);
-    n_cols = min(3, n_levels);
-    n_rows = ceil(n_levels / n_cols);
-    fig_all = figure('Color', 'w', 'Name', 'All significant activations by current');
-    tiledlayout(n_rows, n_cols, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-    for lvl_i = 1:n_levels
-        cur = all_sig_currents(lvl_i);
-        ax = nexttile;
-        imagesc(ax, double(final_mask));
-        axis(ax, 'image');
-        axis(ax, 'off');
-        set(ax, 'YDir', 'normal');
-        xlim(ax, global_v1_xlim);
-        ylim(ax, global_v1_ylim);
-        colormap(ax, gray);
-        caxis(ax, [0 1]);
-        hold(ax, 'on');
-        visboundaries(ax, V1_mask, 'Color', 'w', 'LineWidth', 1.2);
-        visboundaries(ax, final_mask, 'Color', 'y', 'LineWidth', 1.2);
-
-        active_channels = [];
-        for r_i = 1:numel(results)
-            if isempty(results(r_i).current_summary)
-                continue;
-            end
-            idx_cur = find([results(r_i).current_summary.current_uA] == cur & [results(r_i).current_summary.has_cluster], 1);
-            if ~isempty(idx_cur)
-                active_channels(end+1) = r_i; %#ok<AGROW>
-            end
-        end
-
-        cmap_all = lines(max(1, numel(active_channels)));
-        legend_handles = gobjects(0);
-        legend_labels = {};
-        for a_i = 1:numel(active_channels)
-            r_i = active_channels(a_i);
-            idx_cur = find([results(r_i).current_summary.current_uA] == cur & [results(r_i).current_summary.has_cluster], 1);
-            cs = results(r_i).current_summary(idx_cur);
-            B = bwboundaries(cs.sig_cluster_mask & final_mask, conn, 'noholes');
-            for b_i = 1:numel(B)
-                boundary = B{b_i};
-                plot(ax, boundary(:,2), boundary(:,1), '-', ...
-                    'Color', cmap_all(a_i,:), 'LineWidth', 2);
-            end
-            legend_handles(end+1) = plot(ax, nan, nan, '-', ...
-                'Color', cmap_all(a_i,:), 'LineWidth', 2);
-            legend_labels{end+1} = sprintf('Ch %d', results(r_i).channel); %#ok<AGROW>
-        end
-
-        title(ax, sprintf('%g uA | all significant channels', cur), 'Interpreter', 'none');
-        if ~isempty(legend_handles)
-            legend(ax, legend_handles, legend_labels, 'Location', 'southoutside', 'Box', 'off');
-        end
-    end
-
-    exportgraphics(fig_all, fullfile(save_dir, 'pixelwise_all_significant_activations_by_current.png'), 'Resolution', 200);
-end
-
-%% -------------------------
-% Prepare consistency summary table (per-channel, per-current)
-summary_rows = [];
-for r = 1:numel(results)
-    ch = results(r).channel;
-    cs_list = results(r).current_summary;
-    for k = 1:numel(cs_list)
-        cs = cs_list(k);
-        row.channel = ch;
-        row.current_uA = cs.current_uA;
-        row.n_trials = cs.n_trials;
-        if isfield(cs, 'mean_activation_fraction')
-            row.mean_activation_fraction = cs.mean_activation_fraction;
-        else
-            row.mean_activation_fraction = NaN;
-        end
-        row.fraction_activated = cs.fraction_activated;
-        row.largest_cluster_size = cs.largest_cluster_size;
-        row.mean_cluster_effect = cs.mean_cluster_effect;
-        if isfield(cs, 'pass_consistency')
-            row.pass_consistency = cs.pass_consistency;
-        else
-            row.pass_consistency = false;
-        end
-        row.has_cluster = cs.has_cluster;
-        summary_rows = [summary_rows; row]; %#ok<AGROW>
-    end
-end
-
-if ~isempty(summary_rows)
-    % convert struct array to table
-    channels_col = [summary_rows.channel]';
-    currents_col = [summary_rows.current_uA]';
-    ntrials_col = [summary_rows.n_trials]';
-    mean_frac_col = [summary_rows.mean_activation_fraction]';
-    frac_act_col = [summary_rows.fraction_activated]';
-    largest_sz_col = [summary_rows.largest_cluster_size]';
-    mean_eff_col = [summary_rows.mean_cluster_effect]';
-    pass_cons_col = [summary_rows.pass_consistency]';
-    has_cluster_col = [summary_rows.has_cluster]';
-
-    consistency_table = table(channels_col, currents_col, ntrials_col, mean_frac_col, frac_act_col, largest_sz_col, mean_eff_col, pass_cons_col, has_cluster_col, ...
-        'VariableNames', {'channel','current_uA','n_trials','mean_activation_fraction','fraction_activated','largest_cluster_size','mean_cluster_effect','pass_consistency','has_cluster'});
-
-    csv_file = fullfile(save_dir, 'pixelwise_activation_consistency_summary.csv');
-    try
-        writetable(consistency_table, csv_file);
-    catch
-        warning('Failed to write CSV summary to %s', csv_file);
+        clim_to_use = manual_clim;
     end
 else
-    consistency_table = table();
+    clim_to_use = manual_clim;
 end
 
-% SAVE RESULTS
-save_file = fullfile(save_dir, 'pixelwise_threshold_region_results.mat');
-save(save_file, 'results', 'alpha', 'min_cluster_size', 'conn', ...
-    'response_sec', 'pre_sec', 'post_sec', 'Fs', 'analysis_mask', 'final_mask', ...
-    'V1_mask', 'global_v1_xlim', 'global_v1_ylim', 'consistency_table', '-v7.3');
+fprintf('\nColor limits: [%.4f  %.4f]\n', clim_to_use(1), clim_to_use(2));
 
-fprintf('\nSaved results to:\n  %s\n', save_file);
+%% -------------------------
+% FRAME-GRID FIGURES — one figure per (channel, current) condition
+% Shows post-stim frames only; pre-stim dF/F is saved in .mat but not plotted.
+% -------------------------
+n_display = numel(display_frame_idx);
+n_cols    = min(7, n_display);
+n_rows    = ceil(n_display / n_cols);
+cmap      = bwr_colormap();
+
+for r = 1:numel(results)
+
+    ch  = results(r).channel;
+    cur = results(r).current_uA;
+    Mv  = results(r).mean_dff_movie;
+
+    fig = figure('Color', 'w', ...
+        'Name', sprintf('Mean dF/F Ch%d %guA', ch, cur), ...
+        'Position', [50 50  min(1800, 240*n_cols)  240*n_rows + 70]);
+    tl = tiledlayout(n_rows, n_cols, 'TileSpacing', 'tight', 'Padding', 'compact');
+
+    last_ax = [];
+    for di = 1:n_display
+        fi = display_frame_idx(di);
+        if fi < 1 || fi > T, continue; end
+
+        ax = nexttile(tl);
+        imagesc(ax, Mv(:,:,fi));
+        axis(ax, 'image'); axis(ax, 'off');
+        set(ax, 'YDir', 'normal');
+        colormap(ax, cmap);
+        clim(ax, clim_to_use);
+        hold(ax, 'on');
+        visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
+        title(ax, sprintf('t = %.1f s', display_t_post(di)), 'FontSize', 8);
+        last_ax = ax;
+    end
+
+    if ~isempty(last_ax)
+        colorbar(last_ax);
+    end
+
+    title(tl, sprintf('Mean dF/F  |  Ch %d  |  %g uA  |  n = %d trials', ...
+        ch, cur, results(r).n_trials), 'Interpreter', 'none', 'FontSize', 11);
+
+    fig_fname = sprintf('mean_dff_ch%d_%guA_frame_grid.png', ch, cur);
+    exportgraphics(fig, fullfile(save_dir, fig_fname), 'Resolution', 150);
+    close(fig);
+    fprintf('Saved figure: %s\n', fig_fname);
+
+end
+
+%% -------------------------
+% SAVE SUMMARY
+% -------------------------
+summary_file = fullfile(save_dir, 'dff_results_summary.mat');
+save(summary_file, 'results', 'final_mask', 't_s', 't_s_prestim', ...
+     'Fs', 'pre_sec', 'post_sec', '-v7.3');
+
+fprintf('\nDone.\nAll outputs in:\n  %s\n', save_dir);
+fprintf('Conditions processed: %d\n', numel(results));
 
 %% =========================
 % LOCAL FUNCTIONS
-% =========================
-function path_out = resolve_file_path(rel_or_abs_path, dataset_root, kind)
-if exist(rel_or_abs_path, kind_code(kind)) == kind_exists_value(kind)
-    path_out = rel_or_abs_path;
+%% =========================
+
+function path_out = resolve_file_path(rel_or_abs, dataset_root, kind)
+if exist(rel_or_abs, kind_code(kind)) == kind_val(kind)
+    path_out = rel_or_abs;
 else
-    path_out = fullfile(dataset_root, rel_or_abs_path);
+    path_out = fullfile(dataset_root, rel_or_abs);
+end
+assert(exist(path_out, kind_code(kind)) == kind_val(kind), ...
+    'Path does not exist:\n  %s', path_out);
 end
 
-assert(exist(path_out, kind_code(kind)) == kind_exists_value(kind), ...
-    'Resolved %s path does not exist: %s', kind, path_out);
-end
-
-function code = kind_code(kind)
+function c = kind_code(kind)
 switch kind
-    case 'file'
-        code = 'file';
-    case 'dir'
-        code = 'dir';
-    otherwise
-        error('Unsupported path kind: %s', kind);
+    case 'file', c = 'file';
+    case 'dir',  c = 'dir';
+    otherwise,   error('Unknown kind: %s', kind);
 end
 end
 
-function v = kind_exists_value(kind)
+function v = kind_val(kind)
 switch kind
-    case 'file'
-        v = 2;
-    case 'dir'
-        v = 7;
-    otherwise
-        error('Unsupported path kind: %s', kind);
+    case 'file', v = 2;
+    case 'dir',  v = 7;
+    otherwise,   error('Unknown kind: %s', kind);
 end
 end
 
@@ -617,21 +369,21 @@ elseif isfield(day_pointer.meta, 'Freq') && ~isempty(day_pointer.meta.Freq)
     Fs = double(day_pointer.meta.Freq);
 else
     Fs = 10;
+    warning('Camera rate not found in day_pointer.meta — defaulting to 10 Hz.');
 end
 end
 
 function [frame_idx, channels, currents, trial_index] = unpack_day_pointer_entries(entries)
-frame_idx = [];
-channels = [];
-currents = [];
+frame_idx   = [];
+channels    = [];
+currents    = [];
 trial_index = [];
-
 for i = 1:numel(entries)
     onset_i = double(entries(i).trial_onset_frame_idx(:));
-    n_i = numel(onset_i);
-    frame_idx = [frame_idx; onset_i]; %#ok<AGROW>
-    channels = [channels; repmat(double(entries(i).stim_channel), n_i, 1)]; %#ok<AGROW>
-    currents = [currents; repmat(double(entries(i).current_uA), n_i, 1)]; %#ok<AGROW>
+    n_i     = numel(onset_i);
+    frame_idx   = [frame_idx;   onset_i]; %#ok<AGROW>
+    channels    = [channels;    repmat(double(entries(i).stim_channel), n_i, 1)]; %#ok<AGROW>
+    currents    = [currents;    repmat(double(entries(i).current_uA),   n_i, 1)]; %#ok<AGROW>
     if isfield(entries(i), 'trial_index') && ~isempty(entries(i).trial_index)
         trial_index = [trial_index; double(entries(i).trial_index(:))]; %#ok<AGROW>
     else
@@ -640,66 +392,13 @@ for i = 1:numel(entries)
 end
 end
 
-function dff_maps = build_trial_response_map_stack(frame_idx, img_dir, image_files, full_win, baseline_idx, response_idx, H, W)
-n = numel(frame_idx);
-if n == 0
-    dff_maps = [];
-    return;
-end
-
-dff_maps = nan(H, W, n);
-for i = 1:n
-    f = frame_idx(i);
-    frames = f + full_win;
-    stack = zeros(H, W, numel(frames));
-    for k = 1:numel(frames)
-        stack(:,:,k) = double(imread(fullfile(img_dir, image_files(frames(k)).name)));
-    end
-    baseline = mean(stack(:,:,baseline_idx), 3);
-    response = mean(stack(:,:,response_idx), 3);
-    dff_maps(:,:,i) = (response - baseline) ./ baseline;
-end
-end
-
-function p_map = compute_pixelwise_p_map(cur_maps, base_maps, analysis_mask, final_mask, use_analysis_mask_for_stats)
-[H, W, ~] = size(cur_maps);
-p_map = nan(H, W);
-if use_analysis_mask_for_stats
-    pix_idx = find(analysis_mask);
-else
-    pix_idx = find(final_mask);
-end
-cur_2d = reshape(cur_maps, [], size(cur_maps, 3));
-base_2d = reshape(base_maps, [], size(base_maps, 3));
-for k = 1:numel(pix_idx)
-    pix = pix_idx(k);
-    x = cur_2d(pix, :);
-    b = base_2d(pix, :);
-    x = x(isfinite(x));
-    b = b(isfinite(b));
-    if numel(x) < 3 || numel(b) < 3
-        continue;
-    end
-    [~, p] = ttest2(x, b);
-    p_map(pix) = p;
-end
-end
-
-function [sig_cluster_mask, largest_cluster_mask, largest_cluster_size] = cluster_filter_mask(sig_pixel_mask, conn, min_cluster_size, H, W)
-CC = bwconncomp(sig_pixel_mask, conn);
-sig_cluster_mask = false(H, W);
-largest_cluster_mask = false(H, W);
-largest_cluster_size = 0;
-for i = 1:CC.NumObjects
-    pix_list = CC.PixelIdxList{i};
-    cluster_size = numel(pix_list);
-    if cluster_size >= min_cluster_size
-        sig_cluster_mask(pix_list) = true;
-        if cluster_size > largest_cluster_size
-            largest_cluster_size = cluster_size;
-            largest_cluster_mask = false(H, W);
-            largest_cluster_mask(pix_list) = true;
-        end
-    end
-end
+function cmap = bwr_colormap(n)
+% Blue-white-red diverging colormap, symmetric around zero.
+if nargin < 1, n = 256; end
+half = floor(n / 2);
+rest = n - half;
+r    = [linspace(0, 1, half)';  ones(rest, 1)         ];
+g    = [linspace(0, 1, half)';  linspace(1, 0, rest)' ];
+b    = [ones(half, 1);          linspace(1, 0, rest)'  ];
+cmap = [r, g, b];
 end
