@@ -32,13 +32,6 @@ save_dir = 'C:\Projects\LGN_project\wide field analysis result\LGN11_20260326_ex
 % Does NOT affect what is saved — all frames are always saved.
 display_step_s = 0.3;
 
-% Condition filter — leave empty to process every (channel, current) pair found
-% in the day pointer. To restrict to specific conditions, list each pair as a
-% row of [channel, current_uA], for example:
-%   filter_conditions = [1, 7];        % channel 1, 7 uA only
-%   filter_conditions = [1, 7; 2, 5];  % channel 1 @ 7 uA AND channel 2 @ 5 uA
-filter_conditions = [];   % empty = process all conditions
-
 % Color limits for the dF/F figures.
 % use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
 %                          of the data, so it always matches the signal range.
@@ -163,17 +156,30 @@ end
 % -------------------------
 unique_pairs = unique([channels, currents], 'rows', 'stable');
 
-if ~isempty(filter_conditions)
-    keep = false(size(unique_pairs, 1), 1);
-    for f = 1:size(filter_conditions, 1)
-        keep = keep | (unique_pairs(:,1) == filter_conditions(f,1) & ...
-                       unique_pairs(:,2) == filter_conditions(f,2));
-    end
-    unique_pairs = unique_pairs(keep, :);
-    fprintf('Condition filter active — processing %d of the available conditions.\n', size(unique_pairs,1));
-    if size(unique_pairs, 1) == 0
-        error('No conditions matched filter_conditions. Check channel/current values.');
-    end
+%% -------------------------
+% INTERACTIVE CONDITION SELECTION
+% -------------------------
+condition_strs = arrayfun( ...
+    @(r) sprintf('Ch %d  |  %g uA', unique_pairs(r,1), unique_pairs(r,2)), ...
+    (1:size(unique_pairs,1))', 'UniformOutput', false);
+
+[sel_idx, ok] = listdlg( ...
+    'Name',          'Select conditions to analyze', ...
+    'PromptString',  'Available channel-current conditions (Ctrl+click for multiple):', ...
+    'ListString',    condition_strs, ...
+    'SelectionMode', 'multiple', ...
+    'ListSize',      [320 220], ...
+    'OKString',      'Analyze selected', ...
+    'CancelString',  'Cancel');
+
+if ~ok || isempty(sel_idx)
+    error('No conditions selected. Analysis cancelled.');
+end
+
+unique_pairs = unique_pairs(sel_idx, :);
+fprintf('Selected %d condition(s):\n', size(unique_pairs,1));
+for r = 1:size(unique_pairs,1)
+    fprintf('  Ch %d  |  %g uA\n', unique_pairs(r,1), unique_pairs(r,2));
 end
 
 results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
