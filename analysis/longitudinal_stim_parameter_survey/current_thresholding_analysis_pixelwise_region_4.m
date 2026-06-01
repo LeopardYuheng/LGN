@@ -32,6 +32,13 @@ save_dir = 'C:\Projects\LGN_project\wide field analysis result\LGN11_20260326_ex
 % Does NOT affect what is saved — all frames are always saved.
 display_step_s = 0.3;
 
+% Condition filter — leave empty to process every (channel, current) pair found
+% in the day pointer. To restrict to specific conditions, list each pair as a
+% row of [channel, current_uA], for example:
+%   filter_conditions = [1, 7];        % channel 1, 7 uA only
+%   filter_conditions = [1, 7; 2, 5];  % channel 1 @ 7 uA AND channel 2 @ 5 uA
+filter_conditions = [];   % empty = process all conditions
+
 % Color limits for the dF/F figures.
 % use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
 %                          of the data, so it always matches the signal range.
@@ -150,6 +157,19 @@ end
 % MAIN LOOP — one pass per (channel, current) condition
 % -------------------------
 unique_pairs = unique([channels, currents], 'rows', 'stable');
+
+if ~isempty(filter_conditions)
+    keep = false(size(unique_pairs, 1), 1);
+    for f = 1:size(filter_conditions, 1)
+        keep = keep | (unique_pairs(:,1) == filter_conditions(f,1) & ...
+                       unique_pairs(:,2) == filter_conditions(f,2));
+    end
+    unique_pairs = unique_pairs(keep, :);
+    fprintf('Condition filter active — processing %d of the available conditions.\n', size(unique_pairs,1));
+    if size(unique_pairs, 1) == 0
+        error('No conditions matched filter_conditions. Check channel/current values.');
+    end
+end
 
 results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
                  'mean_dff_movie', {}, 't_s', {}, ...
