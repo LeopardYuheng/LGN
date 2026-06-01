@@ -32,6 +32,10 @@ save_dir = 'C:\Projects\LGN_project\wide field analysis result\LGN11_20260326_ex
 % Does NOT affect what is saved — all frames are always saved.
 display_step_s = 0.3;
 
+% Number of pre-stimulus frames to show in the figure (shown at -display_step_s
+% intervals before t = 0, e.g. 3 gives t = -0.9, -0.6, -0.3 s).
+n_prestim_display = 3;
+
 % Color limits for the dF/F figures.
 % use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
 %                          of the data, so it always matches the signal range.
@@ -143,12 +147,16 @@ fprintf('Output directory:\n  %s\n', save_dir);
 
 %% -------------------------
 % FRAME DISPLAY SELECTION
-% Frames shown in the figure at t = 0, display_step_s, 2*display_step_s, ...
+% Pre-stim:  t = -n_prestim_display*display_step_s ... -display_step_s
+% Post-stim: t = 0, display_step_s, ... post_sec
 % -------------------------
-display_t_post    = 0 : display_step_s : post_sec;
-display_frame_idx = zeros(size(display_t_post));
-for di = 1:numel(display_t_post)
-    [~, display_frame_idx(di)] = min(abs(t_s - display_t_post(di)));
+prestim_display_t = -display_step_s * (n_prestim_display : -1 : 1);  % e.g. [-0.9 -0.6 -0.3]
+poststim_display_t = 0 : display_step_s : post_sec;
+display_t_all = [prestim_display_t, poststim_display_t];
+
+display_frame_idx = zeros(size(display_t_all));
+for di = 1:numel(display_t_all)
+    [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
 end
 
 %% -------------------------
@@ -288,7 +296,7 @@ fprintf('\nColor limits: [%.4f  %.4f]\n', clim_to_use(1), clim_to_use(2));
 
 %% -------------------------
 % FRAME-GRID FIGURES — one figure per (channel, current) condition
-% Shows post-stim frames only; pre-stim dF/F is saved in .mat but not plotted.
+% Pre-stim frames shown first, then post-stim.
 % -------------------------
 n_display = numel(display_frame_idx);
 n_cols    = min(7, n_display);
@@ -311,6 +319,8 @@ for r = 1:numel(results)
         fi = display_frame_idx(di);
         if fi < 1 || fi > T, continue; end
 
+        t_label = display_t_all(di);
+
         ax = nexttile(tl);
         imagesc(ax, Mv(:,:,fi));
         axis(ax, 'image'); axis(ax, 'off');
@@ -319,7 +329,7 @@ for r = 1:numel(results)
         clim(ax, clim_to_use);
         hold(ax, 'on');
         visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
-        title(ax, sprintf('t = %.1f s', display_t_post(di)), 'FontSize', 8);
+        title(ax, sprintf('t = %.1f s', t_label), 'FontSize', 8);
         last_ax = ax;
     end
 
