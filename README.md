@@ -83,9 +83,29 @@ This step computes the full time-varying dF/F trace for every pixel, for every c
 
 Run [reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m).
 
-After inspecting the dF/F results, this step aligns the retinotopic map to the stimulation-day image and labels which pixels belong to V1 and other visual areas. Once complete, the V1 boundary can be overlaid on the step 4 outputs.
+After inspecting the dF/F results, this step aligns the retinotopic map to the stimulation-day image and labels which pixels belong to V1 and other visual areas. It saves a new `day_setup` file containing both the brain mask and the retinotopic alignment (including `retino_align.V1_mask_stim`).
 
-This step is intentionally placed last: you do not need to commit to a V1 boundary before you have seen the dF/F activation patterns.
+This step is intentionally placed after step 4: you do not need to commit to a V1 boundary before you have seen the dF/F activation patterns.
+
+### Step 6 (Optional): Relink the day pointer to the V1-aware day_setup
+
+Run [relink_day_pointer_to_day_setup_6.m](analysis/longitudinal_stim_parameter_survey/relink_day_pointer_to_day_setup_6.m).
+
+The day pointer/container built in step 3 stores a reference to whichever `day_setup` file existed at that time (typically the brain-mask-only `day_setup` from pre-step B, since step 5 normally hasn't run yet). Once step 5 produces a *new* `day_setup` file containing the V1 mask, the day pointer's stored reference is stale and does not point at it.
+
+This one-off utility:
+
+- Prompts you to select an existing `day_pointer.mat`
+- Prompts you to select the new `day_setup.mat` produced by step 5 (and verifies it contains a non-empty `retino_align.V1_mask_stim`)
+- Updates the day pointer's stored `day_setup` reference and re-saves the container
+
+Run this once after step 5, before running step 7 (or any other V1-aware script) on data whose day pointer was created before step 5.
+
+### Step 7 (Optional): V1-restricted pixelwise dF/F analysis
+
+Run [current_thresholding_analysis_pixelwise_v1_7.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_v1_7.m).
+
+This is the V1-restricted counterpart of step 4. Instead of analyzing the whole brain mask, it crops to the V1 bounding box and computes dF/F only for pixels inside the V1 boundary (`retino_align.V1_mask_stim` from the `day_setup` saved in step 5). It requires a day pointer that already points at a V1-aware `day_setup` — run step 6 first if needed.
 
 ## What Each Step Is Doing
 
@@ -128,6 +148,7 @@ For each channel-current stimulation condition:
 - Saves the individual dF/F movie for every trial, named `dff_ch{N}_{I}uA_trial{K}` (e.g. `dff_ch1_1uA_trial1`, `dff_ch1_1uA_trial2`, …)
 - Averages across all trials of each condition to produce a `mean_dff_movie` (H × W × T)
 - Generates frame-grid figures showing the spatial dF/F map at each post-stimulation timepoint
+- Optionally exports per-trial and/or trial-averaged dF/F movies as `.mp4` videos (you choose which, via an interactive dialog). Pixels outside the brain mask are rendered as a single solid color rather than raw (NaN) noise, so the surrounding region doesn't flicker
 
 **Key difference from the previous approach:** the old pipeline collapsed dF/F to a single scalar per pixel per trial using a fixed response window (e.g. 0.4–0.6 s post-stim). The new approach preserves the full temporal trace so you can see how activation evolves over time without committing to a response window upfront.
 
@@ -140,7 +161,31 @@ For each channel-current stimulation condition:
 - Defines V1 and other visual area boundaries in stimulation-day pixel coordinates
 - Saves a unified `day_setup` struct including both the brain mask and the retinotopic alignment
 
-Once this is done, the V1 boundary and retinotopic coordinates can be overlaid on the step 4 dF/F movie outputs for region-specific interpretation.
+Once this is done, the V1 boundary and retinotopic coordinates can be overlaid on the step 4 dF/F movie outputs for region-specific interpretation, or used directly for V1-restricted analysis (steps 6–7 below).
+
+### Step 6 — Relink day pointer to V1-aware day_setup
+
+[relink_day_pointer_to_day_setup_6.m](analysis/longitudinal_stim_parameter_survey/relink_day_pointer_to_day_setup_6.m)
+
+- Prompts for an existing day pointer/container and the new `day_setup.mat` produced by step 5
+- Verifies the selected `day_setup` contains a non-empty `retino_align.V1_mask_stim`
+- Updates the day pointer's stored `day_setup` reference and re-saves it
+
+This is needed because the day pointer (built in step 3) stores a reference to whichever `day_setup` existed at that time — almost always the brain-mask-only version from pre-step B, since step 5 normally runs afterward. Without relinking, V1-aware scripts like step 7 cannot find the V1 mask.
+
+### Step 7 — V1-restricted pixelwise dF/F analysis
+
+[current_thresholding_analysis_pixelwise_v1_7.m](analysis/longitudinal_stim_parameter_survey/current_thresholding_analysis_pixelwise_v1_7.m)
+
+The V1-restricted counterpart of step 4. For each channel-current stimulation condition:
+
+- Loads the `day_setup` (via the day pointer's, now-relinked, reference) and crops to the V1 bounding box
+- Computes `dF/F(x,y,t)` for every frame, restricted to pixels inside `retino_align.V1_mask_stim` (pixels outside V1 are set to NaN)
+- Saves per-trial movies (`v1_dff_ch{N}_{I}uA_trial{K}.mat`) and the trial-averaged movie (`v1_mean_dff_ch{N}_{I}uA.mat`)
+- Generates frame-grid figures with both the V1 boundary (white) and the whole-brain boundary (gray) overlaid
+- Optionally exports per-trial and/or mean dF/F videos (`v1_mean_dff_ch{N}_{I}uA.mp4`, etc.) with the same solid-color out-of-mask rendering as step 4
+
+Run step 6 first if the day pointer was created before step 5 produced the V1-aware `day_setup`.
 
 ## Important Path Behavior
 
