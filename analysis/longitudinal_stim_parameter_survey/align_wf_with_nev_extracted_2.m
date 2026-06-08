@@ -283,7 +283,8 @@ fprintf('Total TIFF frames: %d\n', numel(image_files));
 % Output folder
 % -------------------------
 
-analysisFolder = fullfile(fileparts(img_dir), 'analysis');
+analysisFolder = uigetdir(fileparts(img_dir), 'Select output folder for analysis results');
+if isequal(analysisFolder,0), error('No output folder selected.'); end
 if ~exist(analysisFolder,'dir')
     mkdir(analysisFolder);
 end

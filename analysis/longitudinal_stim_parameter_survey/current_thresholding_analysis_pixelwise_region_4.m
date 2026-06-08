@@ -26,15 +26,16 @@ close all; clc; clear; fclose('all');
 % -------------------------
 
 % Output folder for all saved .mat files and figures
-save_dir = 'C:\Projects\LGN_project\wide field analysis result\LGN11_20260326_experiment\analysis\dff_movies';
+save_dir = uigetdir(pwd, 'Select output folder for dF/F movies and figures');
+if isequal(save_dir, 0), error('No output folder selected.'); end
 
 % Spacing between displayed frames in the frame-grid figure (seconds).
 % Does NOT affect what is saved — all frames are always saved.
-display_step_s = 0.3;
+display_step_s = 0.1;
 
 % Number of pre-stimulus frames to show in the figure (shown at -display_step_s
 % intervals before t = 0, e.g. 3 gives t = -0.9, -0.6, -0.3 s).
-n_prestim_display = 3;
+n_prestim_display = 9;
 
 % Color limits for the dF/F figures.
 % use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
