@@ -1,15 +1,14 @@
 %% baseline_drift_analysis_9.m
 % Step 9: Pixelwise fluorescence drift analysis using 0 uA (no-stim) trials.
 %
-% Collects every 0 uA trial from the day pointer and fits a linear model
-%   F(x,y,t) = slope(x,y) * t_global + intercept(x,y)
-% for every in-mask pixel, where t_global is seconds from the very first
-% TIFF frame of the session (frame 1 = t = 0 s).
+% For each 0 uA trial, computes the mean raw fluorescence over the full
+% trial window and uses that as a single representative F(x,y) value for
+% that trial.  Fits a linear model
+%   F(x,y) = slope(x,y) * t_onset + intercept(x,y)
+% per pixel across all 0 uA trials, where t_onset is the onset time of
+% each trial in seconds from the start of the session (frame 1 = t = 0 s).
 %
-% All frames in the trial window (-pre_sec to +post_sec) are used as
-% individual data points — raw fluorescence F, not dF/F.  The whole
-% frame set is never held in memory at once: sufficient statistics
-% (ΣF, Σt·F, Σt, Σt², ΣF², N) are accumulated one trial at a time.
+% One mean image per trial (H x W) is kept at a time — no more.
 %
 % Outputs
 %   baseline_drift_9.mat
@@ -17,7 +16,7 @@
 %       intercept_map  H x W  [raw F at t = 0 s]
 %       r2_map         H x W  [R² of per-pixel linear fit]
 %       n_trials_used  scalar
-%       N_frames       scalar (total frames accumulated)
+%       t_onset_vec    n_trials_used x 1  [trial onset times used]
 %       Fs, pre_sec, post_sec
 %
 %   baseline_drift_slope_r2.png
@@ -25,7 +24,7 @@
 %       Right: R² map (parula, [0 1])
 %
 %   baseline_drift_summary_scatter.png
-%       Left:  mean in-mask F vs global time + fitted line
+%       Left:  mean in-mask F per trial vs onset time + fitted line
 %       Right: residuals of that mean-F fit
 
 close all; clc; clear; fclose('all');
@@ -101,7 +100,7 @@ post_sec  = double(day_pointer.cfg.post_sec);
 
 pre_frames  = round(pre_sec  * Fs);
 post_frames = round(post_sec * Fs);
-full_win    = (-pre_frames : post_frames)';  % T x 1 relative frame offsets
+full_win    = (-pre_frames : post_frames)';   % T x 1 relative frame offsets
 T           = numel(full_win);
 
 fprintf('Camera rate: %.2f Hz  |  Trial window: -%.1fs to +%.1fs  (%d frames/trial)\n', ...
@@ -131,24 +130,25 @@ if n_zero == 0
     error('No 0 uA trials found in the day pointer.');
 end
 
-% Sort chronologically so the summary scatter reads left-to-right
+% Sort chronologically
 [onsets_0, sord] = sort(onsets_0);
 chan_0   = chan_0(sord);
 trials_0 = trials_0(sord);
 
 %% -------------------------
-% ONE-PASS SUFFICIENT STATISTICS ACCUMULATION
+% ACCUMULATE MEAN F PER TRIAL — ONE PASS, ONE TRIAL AT A TIME
 %
-% Sufficient statistics for linear regression y = a*t + b:
-%   S_x   Σ t_global          (scalar — identical for all pixels)
-%   S_xx  Σ t_global²         (scalar)
-%   S_y   Σ F(x,y)            (H x W)
-%   S_xy  Σ t_global·F(x,y)   (H x W)
-%   S_yy  Σ F(x,y)²           (H x W, used for R²)
-%   N     total frame count    (scalar)
+% Each trial contributes one data point per pixel:
+%   t_k = (onset_frame - 1) / Fs   (seconds from session start)
+%   y_k = mean(F(x,y) over all trial frames)
 %
-% Loading one full trial stack (H x W x T) at a time; no more than that
-% is kept in memory simultaneously.
+% Sufficient statistics for linear regression across n_zero trials:
+%   S_x   Σ t_k              (scalar)
+%   S_xx  Σ t_k²             (scalar)
+%   S_y   Σ mean_F_k(x,y)   (H x W)
+%   S_xy  Σ t_k·mean_F_k    (H x W)
+%   S_yy  Σ mean_F_k²       (H x W, for R²)
+%   N     trial count        (scalar)
 % -------------------------
 S_x  = 0;
 S_xx = 0;
@@ -157,13 +157,10 @@ S_xy = zeros(H, W);
 S_yy = zeros(H, W);
 N    = 0;
 
-max_frames      = n_zero * T;
-t_global_all    = zeros(1, max_frames);
-mean_F_all      = zeros(1, max_frames);
-frame_count     = 0;
+t_onset_vec = zeros(n_zero, 1);
+mean_F_vec  = zeros(n_zero, 1);
 
-fprintf('\nLoading 0 uA trials (%d trials x %d frames = up to %d frames)...\n', ...
-    n_zero, T, max_frames);
+fprintf('\nProcessing %d zero-current trials...\n', n_zero);
 
 skipped = 0;
 for k = 1:n_zero
@@ -178,68 +175,54 @@ for k = 1:n_zero
         continue;
     end
 
-    if mod(k, 20) == 1
-        fprintf('  Trial %d / %d  (ch%d | onset frame %d)\n', ...
-            k, n_zero, chan_0(k), f);
-    end
-
-    % --- Load full trial stack (H x W x T) ---
+    % Load trial stack and compute per-pixel mean over the window
     stack = zeros(H, W, T);
     for fi = 1:T
         stack(:,:,fi) = double(imread(fullfile(img_dir, image_files(frames(fi)).name)));
     end
+    F_mean_trial = mean(stack, 3);   % H x W — one value per pixel for this trial
 
-    % --- Global time for each frame in this trial (t=0 at session start) ---
-    t_global_trial = (frames - 1) ./ Fs;   % T x 1, seconds
+    % Global onset time for this trial
+    t_k = (f - 1) / Fs;
 
-    % --- Vectorised sufficient statistics update ---
-    % Reshape t into 1 x 1 x T for broadcasting against H x W x T stack
-    t_3d = reshape(t_global_trial, 1, 1, T);
+    % Update sufficient statistics
+    S_x  = S_x  + t_k;
+    S_xx = S_xx + t_k ^ 2;
+    S_y  = S_y  + F_mean_trial;
+    S_xy = S_xy + t_k .* F_mean_trial;
+    S_yy = S_yy + F_mean_trial .^ 2;
+    N    = N + 1;
 
-    S_x  = S_x  + sum(t_global_trial);         % scalar + scalar
-    S_xx = S_xx + sum(t_global_trial .^ 2);
-    S_y  = S_y  + sum(stack, 3);               % H x W
-    S_xy = S_xy + sum(stack .* t_3d, 3);       % H x W
-    S_yy = S_yy + sum(stack .^ 2, 3);          % H x W
-    N    = N    + T;
+    % Store for summary scatter
+    idx = N;
+    t_onset_vec(idx) = t_k;
+    mean_F_vec(idx)  = mean(F_mean_trial(final_mask));
 
-    % --- Mean in-mask F per frame for the summary scatter ---
-    for fi = 1:T
-        frame_count = frame_count + 1;
-        t_global_all(frame_count) = t_global_trial(fi);
-        fr = stack(:,:,fi);
-        mean_F_all(frame_count)   = mean(fr(final_mask));
+    if mod(k, 20) == 1 || k == n_zero
+        fprintf('  Trial %d / %d  (ch%d | onset %.1f s)\n', k, n_zero, chan_0(k), t_k);
     end
 end
 
-n_trials_used = n_zero - skipped;
-t_global_all  = t_global_all(1:frame_count);
-mean_F_all    = mean_F_all(1:frame_count);
-fprintf('Done. Accumulated %d frames from %d trials (%d skipped).\n', ...
-    N, n_trials_used, skipped);
+t_onset_vec = t_onset_vec(1:N);
+mean_F_vec  = mean_F_vec(1:N);
+n_trials_used = N;
+
+fprintf('Done. Used %d trials (%d skipped).\n', n_trials_used, skipped);
 
 %% -------------------------
-% PER-PIXEL LINEAR FIT FROM SUFFICIENT STATISTICS
-%
+% PER-PIXEL LINEAR FIT
 %   slope     = Sxy_c / Sxx_c
 %   intercept = (S_y - slope * S_x) / N
-%   R²        = 1 - SS_res / SS_tot
-%              = (Sxy_c)² / (Sxx_c · Syy_c)   [equivalent form]
-%
-% where:
-%   Sxx_c = S_xx - S_x²/N       (scalar)
-%   Sxy_c = S_xy - S_x·S_y/N    (H x W)
-%   Syy_c = S_yy - S_y²/N       (H x W) = SS_tot per pixel
+%   R²        = (Sxy_c)² / (Sxx_c · Syy_c)
 % -------------------------
-Sxx_c = S_xx  - S_x ^ 2  / N;            % scalar
-Sxy_c = S_xy  - (S_x / N) .* S_y;        % H x W
-Syy_c = S_yy  - S_y .^ 2  / N;           % H x W
+Sxx_c = S_xx - S_x ^ 2  / N;
+Sxy_c = S_xy - (S_x / N) .* S_y;
+Syy_c = S_yy - S_y .^ 2  / N;
 
-slope_map     = Sxy_c ./ Sxx_c;                      % H x W, raw-F units / s
-intercept_map = (S_y - slope_map .* S_x) ./ N;       % H x W
-r2_map        = (Sxy_c .^ 2) ./ (Sxx_c .* Syy_c);   % H x W, [0,1]
+slope_map     = Sxy_c ./ Sxx_c;
+intercept_map = (S_y - slope_map .* S_x) ./ N;
+r2_map        = (Sxy_c .^ 2) ./ (Sxx_c .* Syy_c);
 
-% Zero out non-brain pixels
 slope_map(~final_mask)     = NaN;
 intercept_map(~final_mask) = NaN;
 r2_map(~final_mask)        = NaN;
@@ -250,15 +233,15 @@ r2_map(~final_mask)        = NaN;
 out_fname = 'baseline_drift_9.mat';
 save(fullfile(save_dir, out_fname), ...
     'slope_map', 'intercept_map', 'r2_map', ...
-    'n_trials_used', 'N', 'Fs', 'pre_sec', 'post_sec', '-v7.3');
+    'n_trials_used', 't_onset_vec', 'Fs', 'pre_sec', 'post_sec', '-v7.3');
 fprintf('Saved: %s\n', out_fname);
 
 %% -------------------------
-% FIGURE 1: slope map (left) + R² map (right)
+% FIGURE 1: slope map + R² map
 % -------------------------
 slope_vals = slope_map(final_mask & isfinite(slope_map));
 q          = quantile(slope_vals, [0.01 0.99]);
-clim_slope = [-max(abs(q)) max(abs(q))];
+clim_slope = [-max(abs(q))  max(abs(q))];
 
 fig1 = figure('Color', 'w', 'Name', 'Baseline drift — slope & R²', ...
     'Position', [50 50 1200 520]);
@@ -269,23 +252,20 @@ imagesc(ax1, slope_map, clim_slope);
 hold(ax1, 'on');
 visboundaries(ax1, final_mask, 'Color', [0.6 0.6 0.6], 'LineWidth', 0.8);
 colormap(ax1, bwr_colormap());
-cb1 = colorbar(ax1, 'eastoutside');
-cb1.Label.String = '\DeltaF / s';
+cb1 = colorbar(ax1); cb1.Label.String = '\DeltaF / s';
 axis(ax1, 'image'); axis(ax1, 'off'); set(ax1, 'YDir', 'normal');
-title(ax1, sprintf('Drift slope  (\\DeltaF / s)  |  %d trials, %d frames', ...
-    n_trials_used, N), 'FontSize', 11);
+title(ax1, sprintf('Drift slope  (\\DeltaF / s)  |  %d trials', n_trials_used), 'FontSize', 11);
 
 ax2 = nexttile(tl1);
 imagesc(ax2, r2_map, [0 1]);
 hold(ax2, 'on');
 visboundaries(ax2, final_mask, 'Color', [0.6 0.6 0.6], 'LineWidth', 0.8);
 colormap(ax2, parula(256));
-cb2 = colorbar(ax2, 'eastoutside');
-cb2.Label.String = 'R²';
+cb2 = colorbar(ax2); cb2.Label.String = 'R²';
 axis(ax2, 'image'); axis(ax2, 'off'); set(ax2, 'YDir', 'normal');
-title(ax2, 'R² of linear fit  (residual diagnostic)', 'FontSize', 11);
+title(ax2, 'R² of linear fit', 'FontSize', 11);
 
-title(tl1, 'Baseline fluorescence drift  (0 uA trials)', ...
+title(tl1, sprintf('Baseline fluorescence drift  (0 uA, %d trials)', n_trials_used), ...
     'FontSize', 12, 'FontWeight', 'bold');
 
 fig1_fname = 'baseline_drift_slope_r2.png';
@@ -293,43 +273,39 @@ exportgraphics(fig1, fullfile(save_dir, fig1_fname), 'Resolution', 150);
 fprintf('Saved: %s\n', fig1_fname);
 
 %% -------------------------
-% FIGURE 2: mean in-mask F vs global time, with fit + residuals
+% FIGURE 2: mean in-mask F per trial vs onset time + residuals
 % -------------------------
-[t_sort, sorder] = sort(t_global_all);
-F_sort           = mean_F_all(sorder);
+p_mean  = polyfit(t_onset_vec, mean_F_vec, 1);
+t_fit   = linspace(t_onset_vec(1), t_onset_vec(end), 500);
+F_fit   = polyval(p_mean, t_fit);
+resid   = mean_F_vec - polyval(p_mean, t_onset_vec);
 
-p_mean   = polyfit(t_sort, F_sort, 1);
-t_fit    = linspace(t_sort(1), t_sort(end), 1000);
-F_fit    = polyval(p_mean, t_fit);
-resid    = F_sort - polyval(p_mean, t_sort);
-
-fig2 = figure('Color', 'w', 'Name', 'Baseline drift — mean F summary', ...
+fig2 = figure('Color', 'w', 'Name', 'Baseline drift — mean F per trial', ...
     'Position', [100 100 1000 420]);
 tl2 = tiledlayout(fig2, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
 ax3 = nexttile(tl2);
 hold(ax3, 'on');
-scatter(ax3, t_sort, F_sort, 3, [0.65 0.65 0.85], 'filled', 'MarkerFaceAlpha', 0.25);
+scatter(ax3, t_onset_vec, mean_F_vec, 30, [0.25 0.45 0.75], 'filled');
 plot(ax3, t_fit, F_fit, '-', 'Color', [0.85 0.20 0.10], 'LineWidth', 2);
-xlabel(ax3, 'Global time  (s  from session start)');
-ylabel(ax3, 'Mean F  (in-mask pixels)');
-title(ax3, sprintf('Mean brain F vs global time\nslope = %.4g  F/s', p_mean(1)), ...
-    'FontSize', 10);
-legend(ax3, {'F(t)  each frame', 'linear fit'}, 'Location', 'best', 'Box', 'off');
+xlabel(ax3, 'Trial onset  (s  from session start)');
+ylabel(ax3, 'Mean F  (in-mask)');
+title(ax3, sprintf('Mean brain F per trial  (n = %d)\nslope = %.4g  F/s', ...
+    n_trials_used, p_mean(1)), 'FontSize', 10);
+legend(ax3, {'trial mean F', 'linear fit'}, 'Location', 'best', 'Box', 'off');
 grid(ax3, 'on'); box(ax3, 'on');
 
 ax4 = nexttile(tl2);
 hold(ax4, 'on');
-scatter(ax4, t_sort, resid, 3, [0.55 0.55 0.55], 'filled', 'MarkerFaceAlpha', 0.25);
+scatter(ax4, t_onset_vec, resid, 30, [0.55 0.55 0.55], 'filled');
 yline(ax4, 0, '-k', 'LineWidth', 1);
-xlabel(ax4, 'Global time  (s  from session start)');
+xlabel(ax4, 'Trial onset  (s  from session start)');
 ylabel(ax4, 'Residual F');
 title(ax4, sprintf('Residuals  (mean F  −  linear fit)\nRMS = %.4g', rms(resid)), ...
     'FontSize', 10);
 grid(ax4, 'on'); box(ax4, 'on');
 
-title(tl2, 'Mean in-mask fluorescence  (0 uA trials)', ...
-    'FontSize', 12, 'FontWeight', 'bold');
+title(tl2, 'Mean in-mask F per 0 uA trial', 'FontSize', 12, 'FontWeight', 'bold');
 
 fig2_fname = 'baseline_drift_summary_scatter.png';
 exportgraphics(fig2, fullfile(save_dir, fig2_fname), 'Resolution', 150);

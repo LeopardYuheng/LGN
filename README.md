@@ -131,12 +131,12 @@ Run [baseline_drift_analysis_9.m](analysis/longitudinal_stim_parameter_survey/ba
 
 This script uses every 0 uA (no-stimulation) trial to characterize how raw fluorescence drifts across the session — independent of any evoked response. For each in-mask pixel it fits a linear model `F(x,y,t) = slope(x,y)·t_global + intercept(x,y)`, where `t_global` is seconds from the first TIFF frame of the session.
 
-- Collects all frames (the full `-pre_sec` to `+post_sec` trial window) from every 0 uA trial regardless of channel, using raw fluorescence F rather than dF/F
-- Fits the linear drift model per pixel using one-pass sufficient-statistics accumulation — the full frame set is never held in memory at once
-- Saves `slope_map`, `intercept_map`, and `R²_map` as `baseline_drift_9.mat`
+- For each 0 uA trial, loads the raw TIFF stack for the full trial window and computes the mean F over all those frames, giving one representative H×W image per trial; uses the trial onset time as its global timestamp (`t_onset = (onset_frame - 1) / Fs`, seconds from session start)
+- Fits `F(x,y) = slope·t_onset + intercept` per pixel across all 0 uA trials using sufficient-statistics accumulation — only one trial's mean image is held in memory at a time
+- Saves `slope_map`, `intercept_map`, and `r2_map` as `baseline_drift_9.mat`
 - Generates two figures:
-  - `baseline_drift_slope_r2.png` — left panel: per-pixel drift rate (ΔF/s, blue-white-red colormap centred at zero); right panel: R² of the linear fit per pixel (how well the drift is captured by a straight line)
-  - `baseline_drift_summary_scatter.png` — left panel: mean in-mask F vs global time for every accumulated frame with the fitted line; right panel: residuals, to reveal any nonlinear drift structure that a linear fit misses
+  - `baseline_drift_slope_r2.png` — left panel: per-pixel drift rate (ΔF/s, blue-white-red centred at zero); right panel: R² map (linear fit quality)
+  - `baseline_drift_summary_scatter.png` — left panel: mean in-mask F per trial vs onset time with the fitted line; right panel: residuals, to reveal nonlinear drift the linear fit misses
 
 ## What Each Step Is Doing
 
@@ -240,11 +240,12 @@ A generic, single-movie utility — works the same whether its input came from t
 Uses all 0 uA trials to model slow fluorescence drift through the session, independent of stimulation:
 
 - Prompts for a day pointer, brain mask, and output folder
-- Collects every valid 0 uA trial (all channels pooled) and loads each trial's raw TIFF frames for the full trial window; accumulates per-pixel sufficient statistics (ΣF, Σt·F, Σt, Σt², ΣF²) one trial at a time so memory usage stays constant regardless of trial count
-- Fits `F(x,y) = slope·t_global + intercept` per pixel in closed form from the accumulated statistics; computes R² as `(Sxy_c)² / (Sxx_c · Syy_c)` without a second pass through the data
-- Saves `baseline_drift_9.mat` containing `slope_map` (H×W, ΔF/s), `intercept_map` (H×W), `r2_map` (H×W), trial count, and total frame count
+- For each 0 uA trial (all channels pooled), loads the raw TIFF stack for the full trial window (`-pre_sec` to `+post_sec`) and reduces it to a single mean image `mean(F, over_frames)` — one H×W data point per trial; the full stack is discarded immediately after
+- Uses the trial onset time `t_onset = (onset_frame − 1) / Fs` as the x-axis coordinate, so the fit captures how per-pixel brightness evolves across the session timeline
+- Fits `F(x,y) = slope·t_onset + intercept` per pixel in closed form from accumulated sufficient statistics; computes R² as `(Sxy_c)² / (Sxx_c · Syy_c)` without a second pass
+- Saves `baseline_drift_9.mat` containing `slope_map` (H×W, ΔF/s), `intercept_map`, `r2_map`, trial onset times, and trial count
 - Generates `baseline_drift_slope_r2.png`: slope map (bwr, centred at zero) and R² map (parula, [0, 1]) side by side
-- Generates `baseline_drift_summary_scatter.png`: mean in-mask F vs global time with the fitted line (left), and the residuals (right) to reveal nonlinear drift
+- Generates `baseline_drift_summary_scatter.png`: mean in-mask F per trial vs onset time with the fitted line (left), and residuals (right) to reveal nonlinear drift
 
 The slope map directly answers "which pixels are getting brighter or dimmer over the course of the session, and at what rate" — useful for deciding whether a session's dF/F movies need drift correction before cross-trial comparisons.
 
