@@ -109,7 +109,7 @@ This is the V1-restricted counterpart of step 4. Instead of analyzing the whole 
 
 ### Step 8 (Optional): Per-pixel significance thresholding of a dF/F movie
 
-Run `dff_pixelwise_significance_threshold_8.m`.
+Run [dff_pixelwise_significance_threshold_8.m](analysis/longitudinal_stim_parameter_survey/dff_pixelwise_significance_threshold_8.m).
 
 This is a generic post-processing utility that operates on a single dF/F movie `.mat` file produced by step 4 or step 7 — either a per-trial movie (`dff_ch{N}_{I}uA_trial{K}.mat` / `v1_dff_ch{N}_{I}uA_trial{K}.mat`) or a trial-averaged movie (`mean_dff_ch{N}_{I}uA.mat` / `v1_mean_dff_ch{N}_{I}uA.mat`). It does not care whether the data came from the whole brain or V1, or whether it's a single trial or a 30-trial average — it only needs the movie array (`dff_movie`/`mean_dff_movie`) and its `t_s` time axis.
 
@@ -124,6 +124,19 @@ For the selected movie:
 - Saves the thresholded movie and the per-pixel std/threshold maps as a `.mat` file, generates a frame-grid figure of the thresholded dF/F at selected pre-/post-stim timepoints, and optionally exports the movie as an `.mp4` video. All of these outputs are tagged with the chosen multiplier, e.g. `thresh_mean_dff_ch16_7uA_3σ.mat`, `thresh_mean_dff_ch16_7uA_3σ_frame_grid.png`, `thresh_mean_dff_ch16_7uA_3σ.mp4` (same display spacing convention as steps 4/7 for the frame grid)
 - Opens an interactive viewer with a time slider so you can scrub through the thresholded movie and see the suprathreshold spatial pattern at any `t`, plus a static "peak response" map at the post-stimulation timepoint with the most suprathreshold pixels
 - Lets you click directly on either displayed map to pick individual pixels of interest (with the ability to undo a mis-click before finishing); for each picked pixel it generates a separate figure plotting that pixel's full `dF/F(t)` trace together with its `±n_std·std` band, titled e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
+
+### Step 9 (Optional): Pixelwise fluorescence drift analysis
+
+Run [baseline_drift_analysis_9.m](analysis/longitudinal_stim_parameter_survey/baseline_drift_analysis_9.m).
+
+This script uses every 0 uA (no-stimulation) trial to characterize how raw fluorescence drifts across the session — independent of any evoked response. For each in-mask pixel it fits a linear model `F(x,y,t) = slope(x,y)·t_global + intercept(x,y)`, where `t_global` is seconds from the first TIFF frame of the session.
+
+- Collects all frames (the full `-pre_sec` to `+post_sec` trial window) from every 0 uA trial regardless of channel, using raw fluorescence F rather than dF/F
+- Fits the linear drift model per pixel using one-pass sufficient-statistics accumulation — the full frame set is never held in memory at once
+- Saves `slope_map`, `intercept_map`, and `R²_map` as `baseline_drift_9.mat`
+- Generates two figures:
+  - `baseline_drift_slope_r2.png` — left panel: per-pixel drift rate (ΔF/s, blue-white-red colormap centred at zero); right panel: R² of the linear fit per pixel (how well the drift is captured by a straight line)
+  - `baseline_drift_summary_scatter.png` — left panel: mean in-mask F vs global time for every accumulated frame with the fitted line; right panel: residuals, to reveal any nonlinear drift structure that a linear fit misses
 
 ## What Each Step Is Doing
 
@@ -219,6 +232,21 @@ A generic, single-movie utility — works the same whether its input came from t
 - Saves the thresholded movie + per-pixel std map as `.mat`, generates a `thresh_<name>_frame_grid.png` figure of the thresholded dF/F at selected timepoints, and optionally exports the movie as `.mp4`
 - Opens an interactive time-slider viewer over the thresholded movie, plus a static "peak response" map at the post-stimulation timepoint with the most suprathreshold pixels
 - Lets you click pixels of interest directly on either map (with the ability to undo a mis-click); for each picked pixel it generates a separate figure plotting `dF/F(t)` with its `±std` band, named e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
+
+### Step 9 — Pixelwise fluorescence drift analysis
+
+[baseline_drift_analysis_9.m](analysis/longitudinal_stim_parameter_survey/baseline_drift_analysis_9.m)
+
+Uses all 0 uA trials to model slow fluorescence drift through the session, independent of stimulation:
+
+- Prompts for a day pointer, brain mask, and output folder
+- Collects every valid 0 uA trial (all channels pooled) and loads each trial's raw TIFF frames for the full trial window; accumulates per-pixel sufficient statistics (ΣF, Σt·F, Σt, Σt², ΣF²) one trial at a time so memory usage stays constant regardless of trial count
+- Fits `F(x,y) = slope·t_global + intercept` per pixel in closed form from the accumulated statistics; computes R² as `(Sxy_c)² / (Sxx_c · Syy_c)` without a second pass through the data
+- Saves `baseline_drift_9.mat` containing `slope_map` (H×W, ΔF/s), `intercept_map` (H×W), `r2_map` (H×W), trial count, and total frame count
+- Generates `baseline_drift_slope_r2.png`: slope map (bwr, centred at zero) and R² map (parula, [0, 1]) side by side
+- Generates `baseline_drift_summary_scatter.png`: mean in-mask F vs global time with the fitted line (left), and the residuals (right) to reveal nonlinear drift
+
+The slope map directly answers "which pixels are getting brighter or dimmer over the course of the session, and at what rate" — useful for deciding whether a session's dF/F movies need drift correction before cross-trial comparisons.
 
 ## Important Path Behavior
 
