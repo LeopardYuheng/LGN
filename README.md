@@ -81,9 +81,9 @@ This step computes the full time-varying dF/F trace for every pixel, for every c
 
 ### Step 5: Retinotopic mapping and region labeling
 
-Run [reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m).
+Run [retino_alignment_with_brain_mask_5.m](analysis/longitudinal_stim_parameter_survey/retino_alignment_with_brain_mask_5.m).
 
-After inspecting the dF/F results, this step aligns the retinotopic map to the stimulation-day image and labels which pixels belong to V1 and other visual areas. It saves a new `day_setup` file containing both the brain mask and the retinotopic alignment (including `retino_align.V1_mask_stim`).
+After inspecting the dF/F results, this step aligns the retinotopic map to the stimulation-day image and labels which pixels belong to V1 and other visual areas. It saves a new `day_setup` file containing both the brain mask and the retinotopic alignment (named as `reference_mask_and_retino_alignment` in retino_map_alignment folder).
 
 This step is intentionally placed after step 4: you do not need to commit to a V1 boundary before you have seen the dF/F activation patterns.
 
@@ -172,7 +172,7 @@ For each channel-current stimulation condition:
 
 ### Step 5 — Retinotopic mapping and region labeling
 
-[retino_alignment_with_brain_mask_5.m](analysis\longitudinal_stim_parameter_survey\retino_alignment_with_brain_mask_5.m)
+[retino_alignment_with_brain_mask_5.m](analysis/longitudinal_stim_parameter_survey/retino_alignment_with_brain_mask_5.m)
 
 - Loads retinotopy output (azi, alt, VFS maps)
 - Aligns the retinotopic map to the stimulation-day image using affine registration (manual cpselect or auto + nudge)
