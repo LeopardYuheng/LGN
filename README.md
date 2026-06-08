@@ -107,6 +107,23 @@ Run [current_thresholding_analysis_pixelwise_v1_7.m](analysis/longitudinal_stim_
 
 This is the V1-restricted counterpart of step 4. Instead of analyzing the whole brain mask, it crops to the V1 bounding box and computes dF/F only for pixels inside the V1 boundary (`retino_align.V1_mask_stim` from the `day_setup` saved in step 5). It requires a day pointer that already points at a V1-aware `day_setup` — run step 6 first if needed.
 
+### Step 8 (Optional): Per-pixel significance thresholding of a dF/F movie
+
+Run `dff_pixelwise_significance_threshold_8.m`.
+
+This is a generic post-processing utility that operates on a single dF/F movie `.mat` file produced by step 4 or step 7 — either a per-trial movie (`dff_ch{N}_{I}uA_trial{K}.mat` / `v1_dff_ch{N}_{I}uA_trial{K}.mat`) or a trial-averaged movie (`mean_dff_ch{N}_{I}uA.mat` / `v1_mean_dff_ch{N}_{I}uA.mat`). It does not care whether the data came from the whole brain or V1, or whether it's a single trial or a 30-trial average — it only needs the movie array (`dff_movie`/`mean_dff_movie`) and its `t_s` time axis.
+
+For the selected movie:
+
+- For every pixel `(x, y)`, computes the standard deviation of its dF/F trace during the 1-second pre-stimulation baseline (`t_s < 0`), ignoring NaN pixels. Because the baseline mean of dF/F is ≈ 0, `±std(x, y)` defines a per-pixel "noise band" / significance threshold
+- Builds a thresholded movie where each frame distinguishes three kinds of pixels with distinct rendering:
+  - pixels that are NaN for the entire movie (outside the brain/V1 mask) — one solid color
+  - in-mask pixels whose `|dF/F(x, y, t)|` is currently within `±std(x, y)` (not significant at this instant) — a second, different solid color, so the region outline remains visible even when nothing is active
+  - in-mask pixels whose `|dF/F(x, y, t)|` exceeds `±std(x, y)` — shown with their actual dF/F value through the colormap
+- Saves the thresholded movie and the per-pixel std map as a `.mat` file, generates a frame-grid figure of the thresholded dF/F at selected pre-/post-stim timepoints (`thresh_<name>_frame_grid.png`, same display spacing convention as steps 4/7), and optionally exports the movie as an `.mp4` video
+- Opens an interactive viewer with a time slider so you can scrub through the thresholded movie and see the suprathreshold spatial pattern at any `t`, plus a static "peak response" map at the post-stimulation timepoint with the most suprathreshold pixels
+- Lets you click directly on either displayed map to pick individual pixels of interest (with the ability to undo a mis-click before finishing); for each picked pixel it generates a separate figure plotting that pixel's full `dF/F(t)` trace together with its `±std` band, titled e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
+
 ## What Each Step Is Doing
 
 ### Pre-step B — Draw brain boundary mask
@@ -149,17 +166,18 @@ For each channel-current stimulation condition:
 - Averages across all trials of each condition to produce a `mean_dff_movie` (H × W × T)
 - Generates frame-grid figures showing the spatial dF/F map at each post-stimulation timepoint
 - Optionally exports per-trial and/or trial-averaged dF/F movies as `.mp4` videos (you choose which, via an interactive dialog). Pixels outside the brain mask are rendered as a single solid color rather than raw (NaN) noise, so the surrounding region doesn't flicker
+- All outputs for a given channel-current condition (trial movies, mean movie, frame-grid figure, and any videos) are grouped into their own subfolder `save_dir/ch{N}_{I}uA/`, so results stay organized when analyzing many conditions
 
 **Key difference from the previous approach:** the old pipeline collapsed dF/F to a single scalar per pixel per trial using a fixed response window (e.g. 0.4–0.6 s post-stim). The new approach preserves the full temporal trace so you can see how activation evolves over time without committing to a response window upfront.
 
 ### Step 5 — Retinotopic mapping and region labeling
 
-[reference_mask_and_retino_alignment.m](analysis/retinotopic_mapping/reference_mask_and_retino_alignment.m)
+[retino_alignment_with_brain_mask_5.m](analysis\longitudinal_stim_parameter_survey\retino_alignment_with_brain_mask_5.m)
 
 - Loads retinotopy output (azi, alt, VFS maps)
 - Aligns the retinotopic map to the stimulation-day image using affine registration (manual cpselect or auto + nudge)
 - Defines V1 and other visual area boundaries in stimulation-day pixel coordinates
-- Saves a unified `day_setup` struct including both the brain mask and the retinotopic alignment
+- Saves a unified `day_setup` struct: `reference_mask_and_retino_alignment` including both the brain mask and the retinotopic alignment
 
 Once this is done, the V1 boundary and retinotopic coordinates can be overlaid on the step 4 dF/F movie outputs for region-specific interpretation, or used directly for V1-restricted analysis (steps 6–7 below).
 
@@ -184,8 +202,22 @@ The V1-restricted counterpart of step 4. For each channel-current stimulation co
 - Saves per-trial movies (`v1_dff_ch{N}_{I}uA_trial{K}.mat`) and the trial-averaged movie (`v1_mean_dff_ch{N}_{I}uA.mat`)
 - Generates frame-grid figures with both the V1 boundary (white) and the whole-brain boundary (gray) overlaid
 - Optionally exports per-trial and/or mean dF/F videos (`v1_mean_dff_ch{N}_{I}uA.mp4`, etc.) with the same solid-color out-of-mask rendering as step 4
+- All outputs for a given channel-current condition are grouped into their own subfolder `save_dir/v1_ch{N}_{I}uA/`, mirroring step 4's organization
 
 Run step 6 first if the day pointer was created before step 5 produced the V1-aware `day_setup`.
+
+### Step 8 — Per-pixel significance thresholding of a dF/F movie
+
+`dff_pixelwise_significance_threshold_8.m`
+
+A generic, single-movie utility — works the same whether its input came from the whole-brain analysis (step 4) or the V1-restricted analysis (step 7), and whether it's a single-trial or trial-averaged movie:
+
+- Prompts for one dF/F movie `.mat` file (any `dff_ch*_trial*.mat`, `mean_dff_ch*.mat`, `v1_dff_ch*_trial*.mat`, or `v1_mean_dff_ch*.mat`)
+- Computes `std(x,y)` of each pixel's dF/F trace over the pre-stimulation baseline (`t_s < 0`), ignoring NaNs, giving a per-pixel `±std` significance band (baseline mean of dF/F is ≈ 0)
+- Builds a thresholded movie that renders, per frame: always-NaN (out-of-mask) pixels in one solid color, in-mask-but-currently-within-band pixels in a second solid color, and suprathreshold pixels (`|dF/F(x,y,t)| > std(x,y)`) with their true dF/F value
+- Saves the thresholded movie + per-pixel std map as `.mat`, generates a `thresh_<name>_frame_grid.png` figure of the thresholded dF/F at selected timepoints, and optionally exports the movie as `.mp4`
+- Opens an interactive time-slider viewer over the thresholded movie, plus a static "peak response" map at the post-stimulation timepoint with the most suprathreshold pixels
+- Lets you click pixels of interest directly on either map (with the ability to undo a mis-click); for each picked pixel it generates a separate figure plotting `dF/F(t)` with its `±std` band, named e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
 
 ## Important Path Behavior
 

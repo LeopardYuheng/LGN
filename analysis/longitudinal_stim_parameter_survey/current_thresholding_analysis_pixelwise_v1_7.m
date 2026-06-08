@@ -17,6 +17,10 @@
 %      with the V1 boundary (white) and brain-mask boundary (gray) overlaid
 %   6. Optionally exports per-trial and/or trial-averaged dF/F movies as MP4 videos
 %
+% All outputs for a given channel-current condition (trial movies, mean
+% movie, frame-grid figure, and any exported videos) are written into
+% their own subfolder  save_dir/v1_ch{N}_{I}uA/  to keep results organized.
+%
 % Requires:
 %   - Day pointer .mat (from make_container_ripple_3.m) whose
 %     meta.day_setup_file_rel points to a day_setup .mat that contains
@@ -240,12 +244,18 @@ end
 
 results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
                  'mean_dff_movie', {}, 't_s', {}, ...
-                 'mean_dff_file', {}, 'trial_dff_files', {});
+                 'mean_dff_file', {}, 'trial_dff_files', {}, 'cond_dir', {});
 
 for p = 1:size(unique_pairs, 1)
 
     ch  = unique_pairs(p, 1);
     cur = unique_pairs(p, 2);
+
+    % All outputs for this channel-current condition go in their own
+    % subfolder, so trial movies, the mean movie, the frame-grid figure,
+    % and any videos for a condition stay grouped together.
+    cond_dir = fullfile(save_dir, sprintf('v1_ch%d_%guA', ch, cur));
+    if ~exist(cond_dir, 'dir'), mkdir(cond_dir); end
 
     idx_cond    = (channels == ch) & (currents == cur);
     onsets_cond = frame_idx(idx_cond);
@@ -288,7 +298,7 @@ for p = 1:size(unique_pairs, 1)
 
         % Save individual trial movie
         trial_fname = sprintf('v1_dff_ch%d_%guA_trial%d.mat', ch, cur, trials_cond(k));
-        trial_fpath = fullfile(save_dir, trial_fname);
+        trial_fpath = fullfile(cond_dir, trial_fname);
         save(trial_fpath, 'dff_movie', 't_s', 'V1_mask', 'final_mask', '-v7.3');
         trial_dff_files{end+1} = trial_fpath; %#ok<AGROW>
 
@@ -308,7 +318,7 @@ for p = 1:size(unique_pairs, 1)
 
     % Save mean movie (t_s < 0 are pre-stim frames)
     mean_fname     = sprintf('v1_mean_dff_ch%d_%guA.mat', ch, cur);
-    mean_fpath     = fullfile(save_dir, mean_fname);
+    mean_fpath     = fullfile(cond_dir, mean_fname);
     mean_dff_movie = mean_movie;
     save(mean_fpath, 'mean_dff_movie', 't_s', 'V1_mask', 'final_mask', '-v7.3');
     fprintf('  Saved mean: %s\n', mean_fname);
@@ -320,6 +330,7 @@ for p = 1:size(unique_pairs, 1)
     results(end).t_s             = t_s;
     results(end).mean_dff_file   = mean_fpath;
     results(end).trial_dff_files = trial_dff_files;
+    results(end).cond_dir        = cond_dir;
 
 end
 
@@ -363,7 +374,7 @@ if make_trial_videos
             Strial = load(trial_fpath, 'dff_movie');
 
             [~, trial_base, ~] = fileparts(trial_fpath);
-            video_fpath = fullfile(save_dir, [trial_base '.mp4']);
+            video_fpath = fullfile(results(r).cond_dir, [trial_base '.mp4']);
 
             tok = regexp(trial_base, 'trial(\d+)$', 'tokens', 'once');
             if isempty(tok)
@@ -428,13 +439,13 @@ for r = 1:numel(results)
         ch, cur, results(r).n_trials), 'Interpreter', 'none', 'FontSize', 11);
 
     fig_fname = sprintf('v1_mean_dff_ch%d_%guA_frame_grid.png', ch, cur);
-    exportgraphics(fig, fullfile(save_dir, fig_fname), 'Resolution', 150);
+    exportgraphics(fig, fullfile(results(r).cond_dir, fig_fname), 'Resolution', 150);
     close(fig);
     fprintf('Saved figure: %s\n', fig_fname);
 
     if make_mean_videos
         mean_video_fname = sprintf('v1_mean_dff_ch%d_%guA.mp4', ch, cur);
-        write_v1_dff_video(fullfile(save_dir, mean_video_fname), Mv, results(r).t_s, V1_mask, final_mask, ...
+        write_v1_dff_video(fullfile(results(r).cond_dir, mean_video_fname), Mv, results(r).t_s, V1_mask, final_mask, ...
             sprintf('Ch %d | %g uA | mean (n=%d)', ch, cur, results(r).n_trials), ...
             clim_to_use, cmap, video_frame_rate_fps, video_quality);
         fprintf('Saved mean video: %s\n', mean_video_fname);
