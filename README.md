@@ -115,14 +115,15 @@ This is a generic post-processing utility that operates on a single dF/F movie `
 
 For the selected movie:
 
-- For every pixel `(x, y)`, computes the standard deviation of its dF/F trace during the 1-second pre-stimulation baseline (`t_s < 0`), ignoring NaN pixels. Because the baseline mean of dF/F is ≈ 0, `±std(x, y)` defines a per-pixel "noise band" / significance threshold
+- For every pixel `(x, y)`, computes the standard deviation of its dF/F trace during the 1-second pre-stimulation baseline (`t_s < 0`), ignoring NaN pixels. Because the baseline mean of dF/F is ≈ 0, `std(x, y)` characterizes that pixel's baseline noise level
+- Prompts you to enter a significance multiplier `n_std` (default 3): the per-pixel significance band is `±n_std·std(x, y)`, and a pixel is "suprathreshold" at time `t` when `|dF/F(x, y, t)| > n_std·std(x, y)`. This multiplier matters — for roughly-Gaussian baseline noise, a pure `±1·std` band is crossed by chance on ~32% of baseline samples, `±2·std` by ~5%, and `±3·std` by only ~0.3%, so `n_std = 1` would flag many "active" pixels even before stimulation. Pick a larger `n_std` for a band that baseline noise essentially never crosses
 - Builds a thresholded movie where each frame distinguishes three kinds of pixels with distinct rendering:
   - pixels that are NaN for the entire movie (outside the brain/V1 mask) — one solid color
-  - in-mask pixels whose `|dF/F(x, y, t)|` is currently within `±std(x, y)` (not significant at this instant) — a second, different solid color, so the region outline remains visible even when nothing is active
-  - in-mask pixels whose `|dF/F(x, y, t)|` exceeds `±std(x, y)` — shown with their actual dF/F value through the colormap
-- Saves the thresholded movie and the per-pixel std map as a `.mat` file, generates a frame-grid figure of the thresholded dF/F at selected pre-/post-stim timepoints (`thresh_<name>_frame_grid.png`, same display spacing convention as steps 4/7), and optionally exports the movie as an `.mp4` video
+  - in-mask pixels whose `|dF/F(x, y, t)|` is currently within `±n_std·std(x, y)` (not significant at this instant) — a second, different solid color, so the region outline remains visible even when nothing is active
+  - in-mask pixels whose `|dF/F(x, y, t)|` exceeds `±n_std·std(x, y)` — shown with their actual dF/F value through the colormap
+- Saves the thresholded movie and the per-pixel std/threshold maps as a `.mat` file, generates a frame-grid figure of the thresholded dF/F at selected pre-/post-stim timepoints, and optionally exports the movie as an `.mp4` video. All of these outputs are tagged with the chosen multiplier, e.g. `thresh_mean_dff_ch16_7uA_3σ.mat`, `thresh_mean_dff_ch16_7uA_3σ_frame_grid.png`, `thresh_mean_dff_ch16_7uA_3σ.mp4` (same display spacing convention as steps 4/7 for the frame grid)
 - Opens an interactive viewer with a time slider so you can scrub through the thresholded movie and see the suprathreshold spatial pattern at any `t`, plus a static "peak response" map at the post-stimulation timepoint with the most suprathreshold pixels
-- Lets you click directly on either displayed map to pick individual pixels of interest (with the ability to undo a mis-click before finishing); for each picked pixel it generates a separate figure plotting that pixel's full `dF/F(t)` trace together with its `±std` band, titled e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
+- Lets you click directly on either displayed map to pick individual pixels of interest (with the ability to undo a mis-click before finishing); for each picked pixel it generates a separate figure plotting that pixel's full `dF/F(t)` trace together with its `±n_std·std` band, titled e.g. `dF/F(t) for pixel (112,133) for ch86_7uA_trial618`
 
 ## What Each Step Is Doing
 

@@ -68,7 +68,9 @@ if isempty(regexp(date_str, '^\d{8}$', 'once'))
 end
 
 % Output folder
-analysisFolder = fullfile('C:\Projects\LGN_project\past wide field imaging pipeline and code(before I join)\20260326 experiment on LGN11', 'analysis');
+save_dir = uigetdir(pwd, 'Select output folder');
+if isequal(save_dir, 0), error('No output folder selected.'); end
+analysisFolder = fullfile(save_dir, 'retino_alignment');
 if ~exist(analysisFolder,'dir'), mkdir(analysisFolder); end
 
 % Master V1 mask path

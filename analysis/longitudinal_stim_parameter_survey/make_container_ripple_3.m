@@ -21,7 +21,7 @@ clc; clear;
 cfg = struct();
 % How long before and after the stimulation pulse to take into analysis
 cfg.pre_sec  = 1;
-cfg.post_sec = 2;
+cfg.post_sec = 2.6;
 
 % Select the wf_trial_alignment.mat produced by step 2
 [wf_name, wf_path] = uigetfile('*.mat', 'Select wf_trial_alignment.mat (from step 2)');

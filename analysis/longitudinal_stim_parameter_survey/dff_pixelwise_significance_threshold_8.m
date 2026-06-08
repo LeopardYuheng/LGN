@@ -84,6 +84,37 @@ if isequal(save_dir, 0), error('No output folder selected.'); end
 if ~exist(save_dir, 'dir'), mkdir(save_dir); end
 
 %% -------------------------
+% CHOOSE SIGNIFICANCE THRESHOLD MULTIPLIER (n_std)
+% -------------------------
+% Pixels are flagged where |dF/F(x,y,t)| > n_std * std(x,y). For ~Gaussian
+% baseline noise, ~32% of samples cross +/-1*std; ~5% cross
+% +/-2*std; ~0.3% cross +/-3*std. Pick a larger n_std for a band that
+% baseline noise essentially never crosses.
+default_n_std = 3;
+sigma_char    = char(963);  % 'sigma' (kept ASCII-safe regardless of file encoding)
+answer = inputdlg(...
+    sprintf(['Significance threshold = n_std %s pixel baseline std\n\n' ...
+             'Expected fraction of baseline samples crossing by chance:\n' ...
+             '  n_std = 1  ->  ~32%%\n' ...
+             '  n_std = 2  ->  ~5%%\n' ...
+             '  n_std = 3  ->  ~0.3%%\n\n' ...
+             'Enter n_std:'], sigma_char), ...
+    'Step 8: significance threshold multiplier', [1 60], {num2str(default_n_std)});
+if isempty(answer)
+    error('No threshold multiplier entered.');
+end
+n_std = str2double(answer{1});
+assert(isfinite(n_std) && n_std > 0, 'Threshold multiplier must be a positive number.');
+
+if n_std == round(n_std)
+    n_std_label = sprintf('%d%s', n_std, sigma_char);
+else
+    n_std_label = sprintf('%g%s', n_std, sigma_char);
+end
+out_tag = sprintf('%s_%s', base_name, n_std_label);
+fprintf('Using significance threshold: |dF/F| > %g * std  (label: %s)\n', n_std, n_std_label);
+
+%% -------------------------
 % PER-PIXEL BASELINE STD AND SIGNIFICANCE THRESHOLD
 % -------------------------
 baseline_idx = t_s < 0;
@@ -91,8 +122,9 @@ assert(any(baseline_idx), 'No pre-stimulation frames (t_s < 0) found in this mov
 
 always_nan_mask = all(isnan(movie), 3);                              % H x W
 pixel_std       = std(movie(:, :, baseline_idx), 0, 3, 'omitnan');   % H x W
+sig_threshold   = n_std * pixel_std;                                 % H x W
 
-sig_mask = abs(movie) > pixel_std;     % H x W x T (NaN comparisons -> false)
+sig_mask = abs(movie) > sig_threshold;     % H x W x T (NaN comparisons -> false)
 
 thresh_movie = movie;
 thresh_movie(~sig_mask) = NaN;
@@ -103,9 +135,10 @@ fprintf('Baseline frames: %d  |  In-mask pixels: %d / %d\n', ...
 %% -------------------------
 % SAVE THRESHOLDED MOVIE
 % -------------------------
-thresh_fname = sprintf('thresh_%s.mat', base_name);
+thresh_fname = sprintf('thresh_%s.mat', out_tag);
 thresh_fpath = fullfile(save_dir, thresh_fname);
-save(thresh_fpath, 'thresh_movie', 'sig_mask', 'pixel_std', 'always_nan_mask', 't_s', '-v7.3');
+save(thresh_fpath, 'thresh_movie', 'sig_mask', 'pixel_std', 'sig_threshold', 'n_std', ...
+    'always_nan_mask', 't_s', '-v7.3');
 fprintf('Saved thresholded movie: %s\n', thresh_fname);
 
 %% -------------------------
@@ -169,10 +202,10 @@ if ~isempty(last_ax)
     colorbar(last_ax);
 end
 
-title(tl, sprintf('Thresholded dF/F (|dF/F| > pixel std)  |  %s', cond_label), ...
+title(tl, sprintf('Thresholded dF/F (|dF/F| > %g%s)  |  %s', n_std, sigma_char, cond_label), ...
     'Interpreter', 'none', 'FontSize', 11);
 
-frame_grid_fname = sprintf('thresh_%s_frame_grid.png', base_name);
+frame_grid_fname = sprintf('thresh_%s_frame_grid.png', out_tag);
 exportgraphics(fig, fullfile(save_dir, frame_grid_fname), 'Resolution', 150);
 close(fig);
 fprintf('Saved figure: %s\n', frame_grid_fname);
@@ -185,11 +218,11 @@ export_choice = questdlg( ...
     'Export thresholded video?', 'Export video', 'Skip', 'Skip');
 
 if strcmp(export_choice, 'Export video')
-    video_fpath = fullfile(save_dir, sprintf('thresh_%s.mp4', base_name));
+    video_fpath = fullfile(save_dir, sprintf('thresh_%s.mp4', out_tag));
     write_thresh_video(video_fpath, movie, sig_mask, always_nan_mask, t_s, cond_label, ...
         clim_to_use, cmap, mask_color_outside, mask_color_inactive, ...
         video_frame_rate_fps, video_quality);
-    fprintf('Saved thresholded video: %s\n', sprintf('thresh_%s.mp4', base_name));
+    fprintf('Saved thresholded video: %s\n', sprintf('thresh_%s.mp4', out_tag));
 end
 
 %% -------------------------
@@ -222,7 +255,7 @@ else
     for pi = 1:size(picked, 1)
         row = picked(pi, 1);
         col = picked(pi, 2);
-        plot_pixel_timecourse(squeeze(movie(row, col, :)), t_s, pixel_std(row, col), ...
+        plot_pixel_timecourse(squeeze(movie(row, col, :)), t_s, sig_threshold(row, col), n_std, sigma_char, ...
             row, col, cond_label, save_dir);
     end
 end
@@ -406,21 +439,21 @@ end
 if isvalid(fig), close(fig); end
 end
 
-function plot_pixel_timecourse(trace, t_s, px_std, row, col, cond_label, save_dir)
-% Plots a single pixel's full dF/F(t) trace with its +/- std baseline band,
-% highlighting timepoints where the trace exceeds that band.
+function plot_pixel_timecourse(trace, t_s, px_thresh, n_std, sigma_char, row, col, cond_label, save_dir)
+% Plots a single pixel's full dF/F(t) trace with its +/- (n_std*std)
+% significance band, highlighting timepoints where the trace exceeds it.
 
 fig = figure('Color', 'w', 'Position', [120 120 640 420]);
 ax  = axes(fig);
 hold(ax, 'on');
 
-h_band = patch(ax, [t_s(1) t_s(end) t_s(end) t_s(1)], [-px_std -px_std px_std px_std], ...
+h_band = patch(ax, [t_s(1) t_s(end) t_s(end) t_s(1)], [-px_thresh -px_thresh px_thresh px_thresh], ...
     [0.85 0.85 0.85], 'FaceAlpha', 0.45, 'EdgeColor', 'none');
 xline(ax, 0, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1);
 
 h_trace = plot(ax, t_s, trace, '-', 'Color', [0.10 0.30 0.80], 'LineWidth', 1.3);
 
-supra = abs(trace) > px_std;
+supra = abs(trace) > px_thresh;
 h_supra = plot(ax, t_s(supra), trace(supra), 'o', 'MarkerSize', 4, ...
     'MarkerFaceColor', [0.85 0.20 0.10], 'MarkerEdgeColor', 'none');
 
@@ -428,7 +461,7 @@ xlabel(ax, 'Time relative to stimulation onset (s)');
 ylabel(ax, '\DeltaF/F');
 title(ax, sprintf('dF/F(t) for pixel (%d,%d) for %s', row, col, cond_label), 'Interpreter', 'none');
 legend(ax, [h_band, h_trace, h_supra], ...
-    {sprintf('baseline \\pm std = \\pm%.4f', px_std), 'dF/F(t)', 'suprathreshold'}, ...
+    {sprintf('baseline \\pm%g%s = \\pm%.4f', n_std, sigma_char, px_thresh), 'dF/F(t)', 'suprathreshold'}, ...
     'Location', 'best', 'Box', 'off');
 grid(ax, 'on'); box(ax, 'on');
 
