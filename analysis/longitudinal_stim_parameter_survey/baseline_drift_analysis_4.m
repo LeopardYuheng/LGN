@@ -11,7 +11,7 @@
 % One mean image per trial (H x W) is kept at a time — no more.
 %
 % Outputs
-%   baseline_drift_9.mat
+%   baseline_drift_4.mat
 %       slope_map      H x W  [raw F units / second]
 %       intercept_map  H x W  [raw F at t = 0 s]
 %       r2_map         H x W  [R² of per-pixel linear fit]
@@ -230,7 +230,7 @@ r2_map(~final_mask)        = NaN;
 %% -------------------------
 % SAVE
 % -------------------------
-out_fname = 'baseline_drift_9.mat';
+out_fname = 'baseline_drift_4.mat';
 save(fullfile(save_dir, out_fname), ...
     'slope_map', 'intercept_map', 'r2_map', ...
     'n_trials_used', 't_onset_vec', 'Fs', 'pre_sec', 'post_sec', '-v7.3');
