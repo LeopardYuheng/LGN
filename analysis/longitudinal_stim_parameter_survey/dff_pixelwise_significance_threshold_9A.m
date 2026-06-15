@@ -84,6 +84,21 @@ if isequal(save_dir, 0), error('No output folder selected.'); end
 if ~exist(save_dir, 'dir'), mkdir(save_dir); end
 
 %% -------------------------
+% OPTIONAL: V1 BOUNDARY OVERLAY
+% (whole-brain result; V1 drawn only as a contour, never used to crop)
+% -------------------------
+v1_outline_color = [0.10 0.85 0.30];   % green V1 boundary
+[v1_fn, v1_fp] = uigetfile('*.mat', ...
+    'Optional: select a day_setup with a V1 boundary to overlay (Cancel = none)');
+if isequal(v1_fn, 0)
+    V1_mask = [];
+    fprintf('No V1 boundary overlay selected.\n');
+else
+    V1_mask = get_v1_boundary(fullfile(v1_fp, v1_fn), [H W]);
+    if ~isempty(V1_mask), fprintf('V1 boundary overlay loaded from: %s\n', v1_fn); end
+end
+
+%% -------------------------
 % CHOOSE SIGNIFICANCE THRESHOLD MULTIPLIER (n_std)
 % -------------------------
 % Pixels are flagged where |dF/F(x,y,t)| > n_std * std(x,y). For ~Gaussian
@@ -192,6 +207,7 @@ for di = 1:n_display
     set(ax, 'YDir', 'normal');
     hold(ax, 'on');
     visboundaries(ax, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.6);
+    if ~isempty(V1_mask), visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0); end
     title(ax, sprintf('t = %+.1f s', t_s(fi)), 'FontSize', 8);
     last_ax = ax;
 end
@@ -221,7 +237,7 @@ if strcmp(export_choice, 'Export video')
     video_fpath = fullfile(save_dir, sprintf('thresh_%s.mp4', out_tag));
     write_thresh_video(video_fpath, movie, sig_mask, always_nan_mask, t_s, cond_label, ...
         clim_to_use, cmap, mask_color_outside, mask_color_inactive, ...
-        video_frame_rate_fps, video_quality);
+        video_frame_rate_fps, video_quality, V1_mask, v1_outline_color);
     fprintf('Saved thresholded video: %s\n', sprintf('thresh_%s.mp4', out_tag));
 end
 
@@ -243,7 +259,8 @@ fprintf('Peak response at t = %+.2f s  (%d suprathreshold pixels)\n', ...
 % INTERACTIVE VIEWER + PIXEL PICKING
 % -------------------------
 picked = pick_pixels_interactively(movie, sig_mask, always_nan_mask, t_s, peak_idx, ...
-    cond_label, clim_to_use, cmap, mask_color_outside, mask_color_inactive);
+    cond_label, clim_to_use, cmap, mask_color_outside, mask_color_inactive, ...
+    V1_mask, v1_outline_color);
 
 %% -------------------------
 % PER-PIXEL dF/F(t) FIGURES FOR PICKED PIXELS
@@ -289,9 +306,12 @@ end
 end
 
 function write_thresh_video(video_file, movie_stack, sig_mask, always_nan_mask, time_axis_sec, ...
-    title_prefix, clim_range, cmap, color_outside, color_inactive, frame_rate, quality)
+    title_prefix, clim_range, cmap, color_outside, color_inactive, frame_rate, quality, ...
+    V1_mask, v1_color)
 % Writes an MP4 of the thresholded dF/F(x,y,t) movie using the same
 % three-tier solid-color rendering as thresh_frame_to_rgb.
+if nargin < 13, V1_mask = []; end
+if nargin < 14, v1_color = [0.10 0.85 0.30]; end
 
 [~, ~, n_frames] = size(movie_stack);
 fig = figure('Color', 'w', 'Visible', 'off', 'Position', [80 80 700 650]);
@@ -308,6 +328,7 @@ axis(ax, 'image'); axis(ax, 'off');
 set(ax, 'YDir', 'normal');
 hold(ax, 'on');
 visboundaries(ax, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.8);
+if ~isempty(V1_mask), visboundaries(ax, V1_mask, 'Color', v1_color, 'LineWidth', 1.0); end
 
 title_handle = title(ax, '', 'Interpreter', 'none');
 colormap(ax, cmap);
@@ -360,7 +381,7 @@ set(title_handle, 'String', sprintf('%s | t = %+.2f s | suprathreshold pixels: %
 end
 
 function picked = pick_pixels_interactively(movie, sig_mask, always_nan_mask, t_s, peak_idx, ...
-    cond_label, clim_range, cmap, color_outside, color_inactive)
+    cond_label, clim_range, cmap, color_outside, color_inactive, V1_mask, v1_color)
 % Opens a time-slider viewer (left) over the thresholded movie and a
 % static peak-response map (right). Click pixels on either axes to pick
 % them for individual dF/F(t) plots:
@@ -368,6 +389,8 @@ function picked = pick_pixels_interactively(movie, sig_mask, always_nan_mask, t_
 %   right-click / 'u' -> undo the most recent pick
 %   Enter / Escape    -> finish picking and close the figure
 % Returns an N x 2 matrix of [row, col] picked pixels (possibly empty).
+if nargin < 11, V1_mask = []; end
+if nargin < 12, v1_color = [0.10 0.85 0.30]; end
 
 [H, W, T] = size(movie);
 
@@ -379,6 +402,7 @@ img1 = image(ax1, thresh_frame_to_rgb(movie(:, :, peak_idx), sig_mask(:, :, peak
     always_nan_mask, clim_range, cmap, color_outside, color_inactive));
 axis(ax1, 'image'); axis(ax1, 'off'); set(ax1, 'YDir', 'normal'); hold(ax1, 'on');
 visboundaries(ax1, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.8);
+if ~isempty(V1_mask), visboundaries(ax1, V1_mask, 'Color', v1_color, 'LineWidth', 1.0); end
 colormap(ax1, cmap); clim(ax1, clim_range);
 title1 = title(ax1, '', 'Interpreter', 'none');
 set_threshold_frame(img1, title1, movie, sig_mask, always_nan_mask, t_s, cond_label, ...
@@ -396,6 +420,7 @@ image(ax2, thresh_frame_to_rgb(movie(:, :, peak_idx), sig_mask(:, :, peak_idx), 
     always_nan_mask, clim_range, cmap, color_outside, color_inactive));
 axis(ax2, 'image'); axis(ax2, 'off'); set(ax2, 'YDir', 'normal'); hold(ax2, 'on');
 visboundaries(ax2, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.8);
+if ~isempty(V1_mask), visboundaries(ax2, V1_mask, 'Color', v1_color, 'LineWidth', 1.0); end
 colormap(ax2, cmap); clim(ax2, clim_range);
 title(ax2, sprintf('Peak response | %s | t = %+.2f s', cond_label, t_s(peak_idx)), ...
     'Interpreter', 'none');

@@ -305,33 +305,18 @@ for p = 1:size(unique_pairs, 1)
 end
 
 %% -------------------------
-% COLOR LIMITS
-% Auto: symmetric around 0, scaled to 1st/99th percentile across all conditions.
+% COLOR MAP
+% Each dF/F figure / movie is AUTOSCALED to the min/max of its own in-mask
+% dF/F values (no fixed clipping, so strong responses no longer saturate),
+% and rendered with a jet colormap.
 % -------------------------
-if use_auto_clim
-    all_vals = [];
-    for r = 1:numel(results)
-        m = results(r).mean_dff_movie;
-        all_vals = [all_vals; m(isfinite(m))]; %#ok<AGROW>
-    end
-    if ~isempty(all_vals)
-        q           = quantile(all_vals, [0.01 0.99]);
-        clim_to_use = [-max(abs(q))  max(abs(q))];
-    else
-        clim_to_use = manual_clim;
-    end
-else
-    clim_to_use = manual_clim;
-end
-
-fprintf('\nColor limits: [%.4f  %.4f]\n', clim_to_use(1), clim_to_use(2));
-
-cmap = bwr_colormap();
+cmap = jet(256);
+fprintf('\nColor limits: per-figure autoscale to in-mask dF/F min/max  |  colormap: jet\n');
 
 %% -------------------------
 % PER-TRIAL DF/F VIDEOS (optional)
-% Re-loads each saved trial movie and writes an MP4 using the global
-% color limits (clim_to_use) so trial videos are visually comparable.
+% Re-loads each saved trial movie and writes an MP4, autoscaled to that
+% trial's own in-mask dF/F min/max (jet colormap).
 % -------------------------
 if make_trial_videos
     fprintf('\nWriting per-trial dF/F videos...\n');
@@ -355,7 +340,7 @@ if make_trial_videos
 
             write_dff_video(video_fpath, Strial.dff_movie, t_s, final_mask, ...
                 sprintf('Ch %d | %g uA | %s', ch, cur, trial_label), ...
-                clim_to_use, cmap, video_frame_rate_fps, video_quality);
+                data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality);
 
             fprintf('  Saved trial video: %s.mp4\n', trial_base);
         end
@@ -375,6 +360,7 @@ for r = 1:numel(results)
     ch  = results(r).channel;
     cur = results(r).current_uA;
     Mv  = results(r).mean_dff_movie;
+    cond_clim = data_clim(Mv, final_mask);   % autoscale to this condition's in-mask range
 
     fig = figure('Color', 'w', ...
         'Name', sprintf('Mean dF/F Ch%d %guA', ch, cur), ...
@@ -393,7 +379,7 @@ for r = 1:numel(results)
         axis(ax, 'image'); axis(ax, 'off');
         set(ax, 'YDir', 'normal');
         colormap(ax, cmap);
-        clim(ax, clim_to_use);
+        clim(ax, cond_clim);
         hold(ax, 'on');
         visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
         title(ax, sprintf('t = %.1f s', t_label), 'FontSize', 8);
@@ -416,7 +402,7 @@ for r = 1:numel(results)
         mean_video_fname = sprintf('mean_dff_ch%d_%guA.mp4', ch, cur);
         write_dff_video(fullfile(results(r).cond_dir, mean_video_fname), Mv, results(r).t_s, final_mask, ...
             sprintf('Ch %d | %g uA | mean (n=%d)', ch, cur, results(r).n_trials), ...
-            clim_to_use, cmap, video_frame_rate_fps, video_quality);
+            cond_clim, cmap, video_frame_rate_fps, video_quality);
         fprintf('Saved mean video: %s\n', mean_video_fname);
     end
 
@@ -460,6 +446,23 @@ switch kind
     case 'dir',  v = 7;
     otherwise,   error('Unknown kind: %s', kind);
 end
+end
+
+function cl = data_clim(M, mask)
+% Autoscale color limits to the min/max of in-mask, finite dF/F values across
+% the whole movie, so the colorbar spans the real data range with no clipping.
+if nargin >= 2 && ~isempty(mask)
+    T = size(M, 3);
+    v = M(repmat(logical(mask), [1 1 T]) & isfinite(M));
+else
+    v = M(isfinite(M));
+end
+if isempty(v)
+    cl = [-0.02 0.02];
+    return;
+end
+lo = min(v); hi = max(v);
+if ~(hi > lo), cl = [-0.02 0.02]; else, cl = [lo hi]; end
 end
 
 function write_dff_video(video_file, movie_stack, time_axis_sec, final_mask, ...
@@ -574,12 +577,4 @@ end
 end
 
 function cmap = bwr_colormap(n)
-% Blue-white-red diverging colormap, symmetric around zero.
-if nargin < 1, n = 256; end
-half = floor(n / 2);
-rest = n - half;
-r    = [linspace(0, 1, half)';  ones(rest, 1)         ];
-g    = [linspace(0, 1, half)';  linspace(1, 0, rest)' ];
-b    = [ones(half, 1);          linspace(1, 0, rest)'  ];
-cmap = [r, g, b];
-end
+% Blue-white-red diverging colormap

@@ -127,7 +127,9 @@ The day pointer/container built in step 3 stores a reference to the brain-mask-o
 
 After relinking, you can also run the V1-restricted version of step 4 (see above) to check baseline stability within V1.
 
-### Step 8 (Only run for V1 analysis): V1-restricted pixelwise dF/F analysis
+### Step 8 (Optional / legacy — V1-restricted dF/F): cropping the computation to V1
+
+> **Note — recommended workflow.** The pipeline now keeps dF/F on the whole-brain mask and shows V1 only as a boundary overlay at step 9 (see "V1 handling" under Step 9). You generally do **not** need to recompute dF/F restricted to V1. Step 8 is retained for backward compatibility and for cases where you specifically want the computation cropped to the V1 bounding box. For the standard analysis, run the whole-brain steps 5_B1 / 5_B2, then overlay the V1 boundary in step 9. You still need step 6 to produce the V1 boundary used by that overlay.
 
 Step 8 mirrors step 5 but restricted to the V1 region. Run steps 6 and 7 first to make the V1 mask available via the day pointer.
 
@@ -151,19 +153,27 @@ The V1-restricted counterpart of step 5_B2. Computes dF/F using `F_global_v1` fr
 
 ### Step 9: Per-pixel significance thresholding
 
-This step is required for all analysis paths. It applies a per-pixel significance threshold to a dF/F movie and produces thresholded visualizations. Two methods are available, matching the two branches in steps 5 and 8.
+This step is required for all analysis paths. It applies a per-pixel significance threshold to a dF/F movie and produces thresholded visualizations. Three variants are available: 9_A and 9_B threshold a single (usually trial-averaged) movie; 9_C analyzes every trial of a condition individually and takes a cross-trial consensus.
+
+**V1 handling (all of step 9).** dF/F is always computed on the whole-brain mask — the pipeline no longer crops or masks the computation to V1. When you want V1 context, point any step 9 script at a `day_setup` file that contains a V1 boundary (`retino_align.V1_mask_stim`, from step 6) when prompted, and the V1 outline is drawn on every figure and video as a green contour. The numerical result is unchanged; V1 is purely an overlay. The legacy V1-restricted dF/F scripts (steps 8_A / 8_B1 / 8_B2) are therefore optional — the recommended workflow is whole-brain dF/F (steps 5_B1 / 5_B2) with a V1 boundary overlay at step 9.
 
 #### Step 9_A (Method 0 — within-trial pre-stim std threshold)
 
 Run [dff_pixelwise_significance_threshold_9A.m](analysis/longitudinal_stim_parameter_survey/dff_pixelwise_significance_threshold_9A.m).
 
-Works on any dF/F movie from step 5_A or step 8_A. Computes the per-pixel significance threshold from the movie's own pre-stimulation frames (`t_s < 0`), prompts for an `n_std` multiplier (default 3), and produces thresholded output tagged with the chosen multiplier (e.g. `thresh_mean_dff_ch16_7uA_3σ`).
+Works on any dF/F movie from step 5_A or step 8_A. Computes the per-pixel significance threshold from the movie's own pre-stimulation frames (`t_s < 0`), prompts for an `n_std` multiplier (default 3), and produces thresholded output tagged with the chosen multiplier (e.g. `thresh_mean_dff_ch16_7uA_3σ`). Now also prompts (optionally) for a V1 boundary file to overlay.
 
 #### Step 9_B (Method 1 — global std threshold)
 
-Run `threshold_dff_method1_9B.m` *(script to be added)*.
+Run [threshold_dff_method1_9B.m](analysis/longitudinal_stim_parameter_survey/threshold_dff_method1_9B.m).
 
-Works on dF/F movies from step 5_B2 or step 8_B2. Loads the precomputed `std_dff_m1` from step 5_B1 or `std_dff_m1_v1` from step 8_B1 as the per-pixel threshold, derived from ~12,000 frames of 0 uA null-condition data rather than ~10 pre-stim frames.
+Works on dF/F movies from step 5_B2 (or the legacy 8_B2). Loads the precomputed `std_dff_m1` from step 5_B1 as the per-pixel threshold, derived from ~12,000 frames of 0 uA null-condition data rather than ~10 pre-stim frames. Also prompts (optionally) for a V1 boundary file to overlay.
+
+#### Step 9_C (Method 1 — per-trial cross-trial consensus region)
+
+Run [consensus_region_method1_9C.m](analysis/longitudinal_stim_parameter_survey/consensus_region_method1_9C.m) (interactive) or, for headless batching, [run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) driven by [run_9C_batch.py](run_9C_batch.py).
+
+This is the per-trial counterpart of 9_A / 9_B. Instead of thresholding one averaged movie, it re-centers each trial by that trial's own pre-stim mean and thresholds at `n_std ×` the trial's own pre-stim std, then asks — at every timepoint — how many trials agree a pixel is active. See the dedicated section below for the exact definitions. You pick `n_std` (default 3) and a consensus count `min_trials` (default 25); pixels active in ≥ `min_trials` trials at a timepoint are consensus-active, and pixels consensus-active at any post-stim time form the stimulation-related region for that channel-current condition. Input is the per-trial Method 1 movies in a condition folder (`method1/ch{N}_{I}uA/`).
 
 ---
 
@@ -225,7 +235,7 @@ For each channel-current stimulation condition:
 - Computes `dF/F(x,y,t) = [F(x,y,t) − F_baseline(x,y)] / F_baseline(x,y)` for every frame and pixel in the trial window, where `F_baseline(x,y)` is the mean pixel intensity over all pre-stimulation frames of that specific trial
 - Saves the individual dF/F movie for every trial, named `dff_ch{N}_{I}uA_trial{K}` (e.g. `dff_ch1_1uA_trial1`, `dff_ch1_1uA_trial2`, …)
 - Averages across all trials of each condition to produce a `mean_dff_movie` (H × W × T)
-- Generates frame-grid figures showing the spatial dF/F map at each post-stimulation timepoint
+- Generates frame-grid figures showing the spatial dF/F map at each post-stimulation timepoint. Color limits are **autoscaled per figure/movie to that data's in-mask dF/F min/max** (no fixed clipping, so strong responses no longer saturate), rendered with a **jet** colormap. (This also applies to the Method 1 dF/F in step 5_B2.)
 - Optionally exports per-trial and/or trial-averaged dF/F movies as `.mp4` videos (you choose which, via an interactive dialog). Pixels outside the brain mask are rendered as a single solid color rather than raw (NaN) noise, so the surrounding region doesn't flicker
 - All outputs for a given channel-current condition are grouped into their own subfolder `save_dir/ch{N}_{I}uA/`
 
@@ -309,27 +319,64 @@ A generic, single-movie utility — works on any dF/F movie from step 5_A or ste
 - Saves the thresholded movie + per-pixel std map as `.mat`, tagged with the chosen multiplier (e.g. `thresh_mean_dff_ch16_7uA_3σ.mat`)
 - Generates a frame-grid figure and optionally exports the movie as `.mp4`
 - Opens an interactive time-slider viewer plus a static peak-response map; lets you click pixels to generate individual `dF/F(t)` plots with the `±n_std·std` band shown
+- Optionally prompts for a `day_setup` with a V1 boundary; when given, the V1 outline is drawn (green) on the frame grid, video, and viewer. The threshold and computation are unchanged — V1 is overlay-only. The overlay is skipped automatically if the V1 mask size does not match the movie (e.g. a V1-cropped movie)
 
 ### Step 9_B — Per-pixel significance thresholding, Method 1
 
-`threshold_dff_method1_9B.m` *(script to be added)*
+[threshold_dff_method1_9B.m](analysis/longitudinal_stim_parameter_survey/threshold_dff_method1_9B.m)
 
-Works on dF/F movies from step 5_B2 or step 8_B2. Identical output and interactive interface to step 9_A, but the per-pixel significance threshold is loaded from `global_baseline_m1.mat` (step 5_B1) or `global_baseline_m1_v1.mat` (step 8_B1) rather than computed from the movie's own pre-stim frames. This gives a threshold derived from ~12,000 frames of null-condition data per pixel, making it far more robust than the ~10-frame within-trial estimate used in step 9_A.
+Works on dF/F movies from step 5_B2 (or the legacy 8_B2). Identical output and interactive interface to step 9_A, but the per-pixel significance threshold is loaded from `global_baseline_m1.mat` (step 5_B1) rather than computed from the movie's own pre-stim frames. This gives a threshold derived from ~12,000 frames of null-condition data per pixel, making it far more robust than the ~10-frame within-trial estimate used in step 9_A. Like 9_A, it now also offers an optional V1 boundary overlay.
+
+### Step 9_C — Per-trial cross-trial consensus region, Method 1
+
+[consensus_region_method1_9C.m](analysis/longitudinal_stim_parameter_survey/consensus_region_method1_9C.m) — interactive
+[run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) — headless batch, driven by [run_9C_batch.py](run_9C_batch.py)
+
+Where 9_A and 9_B threshold a single movie (typically the trial average), step 9_C analyzes **every trial of a channel-current condition individually** and combines them by per-timepoint voting. It consumes the per-trial Method 1 movies in one condition folder (`method1/ch{N}_{I}uA/dff_m1_*_trial*.mat` from step 5_B2).
+
+**dF/F and the per-trial baseline.** dF/F still uses the Method 1 global baseline:
+
+```
+dF/F(x,y,t) = [F(x,y,t) − F_global(x,y)] / F_global(x,y)
+```
+
+For each trial, `baseline_dF/F(x,y)` is defined as that trial's own pre-stim mean of `dF/F(x,y,t)` (mean over `t_s < 0`). Rather than thresholding `|dF/F(x,y,t)|`, step 9_C thresholds the per-trial-baseline-corrected value:
+
+```
+| dF/F(x,y,t) − baseline_dF/F(x,y) |  >  n_std × σ_pre(x,y)
+```
+
+where `σ_pre(x,y)` is the std of that trial's pre-stim `dF/F(x,y,t)` and `n_std` is user-chosen (default 3). Because the band is centered on the pre-stim mean, `σ_pre` is exactly the std of the baseline-corrected pre-stim trace.
+
+**Cross-trial consensus (per timepoint).** Each trial yields a logical activation map `active(x,y,t)`. For every timepoint `t` (the full window, e.g. −0.9 to +2.6 s), the script counts how many of the N trials flag each pixel as active. A pixel is **consensus-active at time t** when that count `≥ min_trials` (default 25, user-changeable, e.g. 25 of 30). The **stimulation-related region** for the condition is the set of pixels that are consensus-active at one or more post-stim timepoints (`t_s ≥ 0`).
+
+Outputs (per `n_std` × `min_trials` combination), written with the tag `consensus_<cond>_<n>σ_min<M>of<N>_m1`:
+
+- `…​.mat` — `count_activated_u16` and `count_suppressed_u16` (H×W×T direction-split trial counts), `consensus` (H×W×T logical), `region_mask` and `region_signed` (H×W), `n_std`, `min_trials`, `n_used`, `t_s`, `always_nan_mask`, `V1_mask`
+- `…_frame_grid.png` — signed net-count map (net = activated − suppressed) on a rainbow (jet) scale over [−N, +N] at selected timepoints in t ∈ [−0.2, 1.2] s: red = activated, green ≈ no/balanced consensus, blue = suppressed; with the magenta consensus contour, brain outline, and optional V1 outline
+- `…_region.png` — the stimulation-related region next to the peak-consensus frame (same rainbow/contour rendering)
+- `…_summary.txt` — region pixel count (split into activated vs suppressed), peak timepoint, peak consensus pixel count, settings
+- `…_m1.mp4` — optional signed net-count movie
+- Interactive viewer (single-condition script): time slider over the net-count movie + static region map; click pixels to plot their activated (up) and suppressed (down) trial counts over time, with the `min_trials` cutoff lines
+
+Like 9_A/9_B, it accepts an optional V1 boundary overlay (whole-brain result; V1 drawn only as a contour). The batch runner sweeps lists of `n_std` and `min_trials`, computing the per-trial pass once per `n_std` and reusing it across `min_trials` values.
+
+> Note: the current 9_C scores activation **directionally** — it keeps separate `count_activated` (`corrected > n_std·σ_pre`) and `count_suppressed` (`corrected < −n_std·σ_pre`) tallies, and a pixel reaches consensus only if it is driven the *same* way in `≥ min_trials` trials (a mixed up/down split is treated as noise). Maps are colored by the signed net count `activated − suppressed` on a rainbow scale (red = activated, green ≈ neutral, blue = suppressed), and the saved `.mat` carries `count_activated_u16` / `count_suppressed_u16`.
+
+### Step 9_D — Time-window consensus region, Method 1 (latency-robust 9_C)
+
+[consensus_region_window_method1_9D.m](analysis/longitudinal_stim_parameter_survey/consensus_region_window_method1_9D.m) — interactive
+[run_consensus_window_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_window_m1_batch.m) — headless batch, driven by [run_9D_batch.py](run_9D_batch.py)
+
+Step 9_D is identical to 9_C in every respect — directional consensus, `min_trials`, signed rainbow net-count maps, magenta consensus contour, optional V1 overlay — with one change to the per-trial activation rule. A pixel counts as activated/suppressed at time `t` in a trial if it crosses threshold **anywhere in the window `[t − window_s, t + window_s]`** (default `window_s = 0.1 s`; at a 10 Hz frame rate that is ±1 frame), instead of only in the single frame `t`:
+
+```
+activated at t   ⟺   dF/F(x,y,τ) − baseline_dF/F(x,y) >  n_std·σ_pre(x,y)   for some τ ∈ [t−window_s, t+window_s]
+suppressed at t  ⟺   dF/F(x,y,τ) − baseline_dF/F(x,y) < −n_std·σ_pre(x,y)   for some τ ∈ [t−window_s, t+window_s]
+```
+
+Because trials respond with slightly different latencies, the strict single-frame 9_C can lose cross-trial agreement when the response lands a frame early or late; the window absorbs that jitter. Implemented as a temporal max-dilation of the per-trial activation maps by `window_frames = round(window_s / dt)` before counting. Output filenames carry a `win{window_s}s` tag; the interactive setting is `window_s` and the batch argument / driver constant is `WINDOW_S` (default 0.1). In practice 9_D recovers substantially more consensus than 9_C at the same `n_std`. Use 9_D when latency jitter matters; use 9_C for the strictest same-frame agreement.
 
 ---
 
-## Important Path Behavior
-
-Several scripts save structures that contain file paths or relative file references. These saved outputs are then reused by later scripts.
-
-That means:
-
-- choose the correct folders when prompted
-- make sure the experiment data is already in its final home
-- avoid reorganizing the dataset midway through analysis
-
-If you need to reorganize data, do it before running the pipeline, not after.
-
-## Practical Rule
-
-Once the experiment data is in place and you start running the pipeline, treat the folder locations as fixed.
+#

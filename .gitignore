@@ -1,1 +1,11 @@
 acquisition/retinotopic_mapping/4directions_stim_60Hz.mat
+
+# tooling / caches / generated outputs
+.claude/
+__pycache__/
+*.pyc
+consensus_9C_results/
+consensus_9D_results/
+step9_methods/
+outputs/
+LGN_lagacy_pipeline*/
