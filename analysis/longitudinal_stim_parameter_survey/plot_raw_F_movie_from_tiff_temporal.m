@@ -466,4 +466,33 @@ if isfield(s, 'reference_mask_struct') && isstruct(s.reference_mask_struct) && .
     c = s.reference_mask_struct.final_mask; return;
 end
 if isfield(s, 'final_mask'), c = s.final_mask; return; end
-if isfield(s, 'brain_mask'), c = 
+if isfield(s, 'brain_mask'), c = s.brain_mask; return; end
+if isfield(s, 'day_setup') && isstruct(s.day_setup)
+    c = try_fields(s.day_setup); return;
+end
+if isfield(s, 'reference_mask_and_retino_alignment') && ...
+        isstruct(s.reference_mask_and_retino_alignment)
+    c = try_fields(s.reference_mask_and_retino_alignment); return;
+end
+end
+
+function ds = resolve_day_setup(day_pointer)
+% Best-effort load of the day_setup struct the day pointer references, for the
+% optional brain-mask overlay only. Returns [] if it cannot be found.
+ds = [];
+cand = '';
+if isfield(day_pointer.meta, 'day_setup_path'),     cand = day_pointer.meta.day_setup_path;
+elseif isfield(day_pointer.meta, 'day_setup_rel'),  cand = day_pointer.meta.day_setup_rel;
+elseif isfield(day_pointer, 'day_setup_path'),      cand = day_pointer.day_setup_path;
+end
+if isempty(cand), return; end
+root = '';
+if isfield(day_pointer.meta, 'dataset_root'), root = day_pointer.meta.dataset_root; end
+if exist(cand, 'file') ~= 2, cand = fullfile(root, cand); end
+if exist(cand, 'file') ~= 2, return; end
+M = load(cand);
+if     isfield(M, 'day_setup'), ds = M.day_setup;
+elseif isfield(M, 'reference_mask_and_retino_alignment'), ds = M.reference_mask_and_retino_alignment;
+else,  ds = M;
+end
+end

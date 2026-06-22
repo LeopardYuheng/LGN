@@ -74,4 +74,10 @@ for d in cond_dirs:
     if os.path.isfile(avg):
         add_slide("Channel %d - %s uA - AVERAGE (raw F)" % (ch, cur_lbl), avg)
         n += 1
-    pattern = os.path.join(d, "rawF_ch%d_%suA_trial*.png" % (ch, cur_lbl
+    pattern = os.path.join(d, "rawF_ch%d_%suA_trial*.png" % (ch, cur_lbl))
+    for png in sorted(glob.glob(pattern), key=trial_of):
+        add_slide("Channel %d - %s uA - trial %d (raw F)" % (ch, cur_lbl, trial_of(png)), png)
+        n += 1
+
+prs.save(PPTX)
+print(f"Saved {PPTX} with {n} slides")

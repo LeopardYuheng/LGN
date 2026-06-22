@@ -24,8 +24,9 @@ if isempty(answ)
 end
 
 mouse_id      = string(strtrim(answ{1}));
-date_str      = string(strtrim(answ{2}));
-experiment_id = string(strtrim(answ{3}));
+date_str      = string(strtrim(answ{3}));
+experiment_id = string(strtrim(answ{2}));
+
 base_name     = string(strtrim(answ{4}));
 
 if strlength(mouse_id)==0

@@ -1,58 +1,40 @@
-%% current_thresholding_analysis_pixelwise_region_4.m
-% Step 4: Pixelwise dF/F(x,y,t) movie computation.
+%% compute_dff_method1_5B2.m
+% Step 5_B2: Whole-brain pixelwise dF/F(x,y,t) movies using Method 1
+%            (drift-corrected, time-varying baseline normalisation).
 %
 % For each channel-current stimulation condition this script:
-%   1. Computes dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
-%      for every trial, where F_baseline = mean(F, pre-stim frames of that trial).
-%   2. Saves each individual trial movie as  dff_ch{N}_{I}uA_trial{K}.mat
-%      (contains dff_movie H x W x T  and  t_s; use t_s < 0 for pre-stim frames)
-%   3. Averages across trials to produce    mean_dff_ch{N}_{I}uA.mat
+%   1. Computes a per-trial drift-corrected baseline from the linear model
+%      saved by step 5_B1:
+%        F_baseline(x,y) = intercept_map(x,y) + slope_map(x,y) * t_session
+%      where t_session = (onset_frame - 1) / Fs  (seconds from session start).
+%   2. Computes dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
+%      for every frame of every trial.
+%   3. Saves each individual trial movie as  dff_m1_ch{N}_{I}uA_trial{K}.mat
+%      (contains dff_movie H x W x T  and  t_s)
+%   4. Averages across trials to produce    mean_dff_m1_ch{N}_{I}uA.mat
 %      (same format: mean_dff_movie, t_s, final_mask)
-%   4. Saves a frame-grid figure of the mean dF/F at selected post-stim timepoints.
-%      (pre-stim dF/F is saved but not shown in the figure)
+%   5. Saves a frame-grid figure of the mean dF/F at selected post-stim timepoints.
 %
-% All outputs for a given channel-current condition (trial movies, mean
-% movie, frame-grid figure, and any exported videos) are written into
-% their own subfolder  save_dir/ch{N}_{I}uA/  to keep results organized.
+% All outputs for a given channel-current condition are written into
+%   save_dir/method1/ch{N}_{I}uA/
 %
 % Requires:
-%   - Day pointer .mat  (from make_container_ripple_3.m)
-%   - brain_mask.mat    (from draw_brain_mask_0.m)
-%
-% display_step_s controls the figure grid spacing only; all frames are always
-% saved in the .mat files. At 10 Hz with display_step_s = 0.3, the figure
-% shows frames at t = 0, 0.3, 0.6, ... s post-stim.
+%   - Day pointer .mat       (from make_container_ripple_3.m)
+%   - brain_mask.mat         (from draw_brain_mask_0.m)
+%   - baseline_drift_4.mat   (from baseline_drift_analysis_4.m, step 4)
+%     must contain slope_map and intercept_map
 
 close all; clc; clear; fclose('all');
 
 %% -------------------------
 % USER SETTINGS
 % -------------------------
+display_step_s    = 0.1;   % spacing between displayed frames in the figure (seconds)
+n_prestim_display = 9;     % number of pre-stim frames to show
 
-% Output folder for all saved .mat files and figures
-save_dir = uigetdir(pwd, 'Select output folder for dF/F movies and figures');
-if isequal(save_dir, 0), error('No output folder selected.'); end
-
-% Spacing between displayed frames in the frame-grid figure (seconds).
-% Does NOT affect what is saved — all frames are always saved.
-display_step_s = 0.1;
-
-% Number of pre-stimulus frames to show in the figure (shown at -display_step_s
-% intervals before t = 0, e.g. 3 gives t = -0.9, -0.6, -0.3 s).
-n_prestim_display = 9;
-
-% Color limits for the dF/F figures.
-% use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
-%                          of the data, so it always matches the signal range.
-% use_auto_clim = false : use the fixed range in manual_clim below.
 use_auto_clim = true;
 manual_clim   = [-0.02  0.02];
 
-% Also export per-trial and/or trial-averaged dF/F movies as MP4 videos
-% (in addition to the .mat files saved below). Videos use the same color
-% limits as the frame-grid figures (clim_to_use) and overlay the brain
-% mask boundary. Slower and produces many files for large trial counts.
-% Choice is made interactively via the dialog below.
 video_export_options = {'Per-trial dF/F videos (.mp4)', 'Trial-averaged (mean) dF/F videos (.mp4)'};
 video_sel = listdlg( ...
     'Name',          'Export dF/F movies as video?', ...
@@ -67,6 +49,15 @@ make_trial_videos    = ismember(1, video_sel);
 make_mean_videos     = ismember(2, video_sel);
 video_frame_rate_fps = 10;
 video_quality        = 95;
+
+%% -------------------------
+% SELECT OUTPUT ROOT FOLDER
+% -------------------------
+save_dir = uigetdir(pwd, 'Select output root folder (method1/ subfolder created automatically)');
+if isequal(save_dir, 0), error('No output folder selected.'); end
+
+method1_dir = fullfile(save_dir, 'method1');
+if ~exist(method1_dir, 'dir'), mkdir(method1_dir); end
 
 %% -------------------------
 % LOAD DAY POINTER
@@ -100,12 +91,28 @@ assert(isfield(M, 'reference_mask_struct') && isfield(M.reference_mask_struct, '
 
 final_mask = logical(M.reference_mask_struct.final_mask);
 [H, W]     = size(final_mask);
-fprintf('Brain mask loaded: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask(:)));
+fprintf('Brain mask: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask(:)));
 
 %% -------------------------
-% RESOLVE IMAGE DIRECTORY
-% img_dir_rel stores the absolute path when data and analysis are on
-% separate drives; resolve_file_path uses it directly in that case.
+% LOAD DRIFT MODEL (from step 4)
+% -------------------------
+[gb_fn, gb_fp] = uigetfile('*.mat', 'Select baseline_drift_4.mat (from step 4)');
+if isequal(gb_fn, 0), error('No drift file selected.'); end
+
+GB = load(fullfile(gb_fp, gb_fn), 'slope_map', 'intercept_map');
+assert(isfield(GB, 'slope_map') && isfield(GB, 'intercept_map'), ...
+    'Selected file does not contain slope_map / intercept_map. Did you run baseline_drift_analysis_4.m?');
+
+slope_map     = GB.slope_map;      % H x W
+intercept_map = GB.intercept_map;  % H x W
+assert(isequal(size(slope_map), [H W]), ...
+    'slope_map size (%dx%d) does not match brain mask (%dx%d).', ...
+    size(slope_map,1), size(slope_map,2), H, W);
+
+fprintf('Drift model loaded from: %s\n', gb_fn);
+
+%% -------------------------
+% RESOLVE IMAGE DIRECTORY & SORT TIFF FILES
 % -------------------------
 dataset_root = '';
 if isfield(day_pointer.meta, 'dataset_root')
@@ -114,9 +121,6 @@ end
 img_dir = resolve_file_path(day_pointer.meta.img_dir_rel, dataset_root, 'dir');
 fprintf('Image directory:\n  %s\n', img_dir);
 
-%% -------------------------
-% LOAD AND SORT TIFF FILES
-% -------------------------
 image_files = [dir(fullfile(img_dir, '*.tif')); dir(fullfile(img_dir, '*.tiff'))];
 assert(~isempty(image_files), 'No TIFF files found in:\n  %s', img_dir);
 
@@ -144,8 +148,6 @@ full_win    = -pre_frames : post_frames;
 t_s         = full_win / Fs;
 T           = numel(full_win);
 
-baseline_idx = t_s < 0;  % logical index into t_s for pre-stim frames
-
 fprintf('Camera rate: %.2f Hz  |  Pre: %.1f s  |  Post: %.1f s  |  %d frames/trial\n', ...
     Fs, pre_sec, post_sec, T);
 
@@ -165,33 +167,23 @@ trial_index = trial_index(valid);
 fprintf('Valid trials: %d\n', sum(valid));
 
 %% -------------------------
-% CREATE OUTPUT DIRECTORY
-% -------------------------
-if ~exist(save_dir, 'dir'), mkdir(save_dir); end
-fprintf('Output directory:\n  %s\n', save_dir);
-
-%% -------------------------
 % FRAME DISPLAY SELECTION
-% Pre-stim:  t = -n_prestim_display*display_step_s ... -display_step_s
-% Post-stim: t = 0, display_step_s, ... post_sec
 % -------------------------
-prestim_display_t = -display_step_s * (n_prestim_display : -1 : 1);  % e.g. [-0.9 -0.6 -0.3]
+prestim_display_t  = -display_step_s * (n_prestim_display : -1 : 1);
 poststim_display_t = 0 : display_step_s : post_sec;
-display_t_all = [prestim_display_t, poststim_display_t];
+display_t_all      = [prestim_display_t, poststim_display_t];
 
 display_frame_idx = zeros(size(display_t_all));
 for di = 1:numel(display_t_all)
-    [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
+    [~, display_frame_idx(di)] = min(abs(t_s - display_t_ ...
+        all(di)));
 end
-
-%% -------------------------
-% MAIN LOOP — one pass per (channel, current) condition
-% -------------------------
-unique_pairs = unique([channels, currents], 'rows', 'stable');
 
 %% -------------------------
 % INTERACTIVE CONDITION SELECTION
 % -------------------------
+unique_pairs = unique([channels, currents], 'rows', 'stable');
+
 condition_strs = arrayfun( ...
     @(r) sprintf('Ch %d  |  %g uA', unique_pairs(r,1), unique_pairs(r,2)), ...
     (1:size(unique_pairs,1))', 'UniformOutput', false);
@@ -219,15 +211,15 @@ results = struct('channel', {}, 'current_uA', {}, 'n_trials', {}, ...
                  'mean_dff_movie', {}, 't_s', {}, ...
                  'mean_dff_file', {}, 'trial_dff_files', {}, 'cond_dir', {});
 
+%% -------------------------
+% MAIN LOOP — one pass per (channel, current) condition
+% -------------------------
 for p = 1:size(unique_pairs, 1)
 
     ch  = unique_pairs(p, 1);
     cur = unique_pairs(p, 2);
 
-    % All outputs for this channel-current condition go in their own
-    % subfolder, so trial movies, the mean movie, the frame-grid figure,
-    % and any videos for a condition stay grouped together.
-    cond_dir = fullfile(save_dir, sprintf('ch%d_%guA', ch, cur));
+    cond_dir = fullfile(method1_dir, sprintf('ch%d_%guA', ch, cur));
     if ~exist(cond_dir, 'dir'), mkdir(cond_dir); end
 
     idx_cond    = (channels == ch) & (currents == cur);
@@ -251,6 +243,12 @@ for p = 1:size(unique_pairs, 1)
             continue;
         end
 
+        % Session-clock time of this trial's onset (matches step 4 convention)
+        t_session = (f - 1) / Fs;
+
+        % Drift-corrected per-trial baseline (H x W)
+        F_baseline = intercept_map + slope_map * t_session;
+
         % Load frame stack for this trial
         stack = zeros(H, W, T);
         for fi = 1:T
@@ -258,11 +256,11 @@ for p = 1:size(unique_pairs, 1)
         end
 
         % dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
-        F_baseline  = mean(stack(:,:,baseline_idx), 3);    % H x W
-        dff_movie   = (stack - F_baseline) ./ F_baseline;  % H x W x T
+        % F_baseline is H x W; broadcasts across T automatically.
+        dff_movie = (stack - F_baseline) ./ F_baseline;   % H x W x T
 
-        % Save individual trial movie (t_s < 0 are pre-stim frames)
-        trial_fname = sprintf('dff_ch%d_%guA_trial%d.mat', ch, cur, trials_cond(k));
+        % Save individual trial movie
+        trial_fname = sprintf('dff_m1_ch%d_%guA_trial%d.mat', ch, cur, trials_cond(k));
         trial_fpath = fullfile(cond_dir, trial_fname);
         save(trial_fpath, 'dff_movie', 't_s', '-v7.3');
         trial_dff_files{end+1} = trial_fpath; %#ok<AGROW>
@@ -286,14 +284,14 @@ for p = 1:size(unique_pairs, 1)
         mean_movie(:,:,fi) = frame_i;
     end
 
-    % Save mean movie (t_s < 0 are pre-stim frames)
-    mean_fname     = sprintf('mean_dff_ch%d_%guA.mat', ch, cur);
+    % Save mean movie
+    mean_fname     = sprintf('mean_dff_m1_ch%d_%guA.mat', ch, cur);
     mean_fpath     = fullfile(cond_dir, mean_fname);
     mean_dff_movie = mean_movie;
     save(mean_fpath, 'mean_dff_movie', 't_s', 'final_mask', '-v7.3');
     fprintf('  Saved mean: %s\n', mean_fname);
 
-    results(end+1).channel        = ch;        %#ok<AGROW>
+    results(end+1).channel        = ch;       %#ok<AGROW>
     results(end).current_uA      = cur;
     results(end).n_trials        = count;
     results(end).mean_dff_movie  = mean_movie;
@@ -315,8 +313,6 @@ fprintf('\nColor limits: per-figure autoscale to in-mask dF/F min/max  |  colorm
 
 %% -------------------------
 % PER-TRIAL DF/F VIDEOS (optional)
-% Re-loads each saved trial movie and writes an MP4, autoscaled to that
-% trial's own in-mask dF/F min/max (jet colormap).
 % -------------------------
 if make_trial_videos
     fprintf('\nWriting per-trial dF/F videos...\n');
@@ -332,14 +328,10 @@ if make_trial_videos
             video_fpath = fullfile(results(r).cond_dir, [trial_base '.mp4']);
 
             tok = regexp(trial_base, 'trial(\d+)$', 'tokens', 'once');
-            if isempty(tok)
-                trial_label = trial_base;
-            else
-                trial_label = sprintf('trial %s', tok{1});
-            end
+            trial_label = sprintf('trial %s', tok{1});
 
             write_dff_video(video_fpath, Strial.dff_movie, t_s, final_mask, ...
-                sprintf('Ch %d | %g uA | %s', ch, cur, trial_label), ...
+                sprintf('Ch %d | %g uA | %s | M1', ch, cur, trial_label), ...
                 data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality);
 
             fprintf('  Saved trial video: %s.mp4\n', trial_base);
@@ -348,8 +340,7 @@ if make_trial_videos
 end
 
 %% -------------------------
-% FRAME-GRID FIGURES — one figure per (channel, current) condition
-% Pre-stim frames shown first, then post-stim.
+% FRAME-GRID FIGURES
 % -------------------------
 n_display = numel(display_frame_idx);
 n_cols    = min(7, n_display);
@@ -363,7 +354,7 @@ for r = 1:numel(results)
     cond_clim = data_clim(Mv, final_mask);   % autoscale to this condition's in-mask range
 
     fig = figure('Color', 'w', ...
-        'Name', sprintf('Mean dF/F Ch%d %guA', ch, cur), ...
+        'Name', sprintf('Mean dF/F (M1) Ch%d %guA', ch, cur), ...
         'Position', [50 50  min(1800, 240*n_cols)  240*n_rows + 70]);
     tl = tiledlayout(n_rows, n_cols, 'TileSpacing', 'tight', 'Padding', 'compact');
 
@@ -371,8 +362,6 @@ for r = 1:numel(results)
     for di = 1:n_display
         fi = display_frame_idx(di);
         if fi < 1 || fi > T, continue; end
-
-        t_label = display_t_all(di);
 
         ax = nexttile(tl);
         imagesc(ax, Mv(:,:,fi));
@@ -382,7 +371,7 @@ for r = 1:numel(results)
         clim(ax, cond_clim);
         hold(ax, 'on');
         visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
-        title(ax, sprintf('t = %.1f s', t_label), 'FontSize', 8);
+        title(ax, sprintf('t = %.1f s', display_t_all(di)), 'FontSize', 8);
         last_ax = ax;
     end
 
@@ -390,18 +379,18 @@ for r = 1:numel(results)
         colorbar(last_ax);
     end
 
-    title(tl, sprintf('Mean dF/F  |  Ch %d  |  %g uA  |  n = %d trials', ...
+    title(tl, sprintf('Mean dF/F (Method 1)  |  Ch %d  |  %g uA  |  n = %d trials', ...
         ch, cur, results(r).n_trials), 'Interpreter', 'none', 'FontSize', 11);
 
-    fig_fname = sprintf('mean_dff_ch%d_%guA_frame_grid.png', ch, cur);
+    fig_fname = sprintf('mean_dff_m1_ch%d_%guA_frame_grid.png', ch, cur);
     exportgraphics(fig, fullfile(results(r).cond_dir, fig_fname), 'Resolution', 150);
     close(fig);
     fprintf('Saved figure: %s\n', fig_fname);
 
     if make_mean_videos
-        mean_video_fname = sprintf('mean_dff_ch%d_%guA.mp4', ch, cur);
+        mean_video_fname = sprintf('mean_dff_m1_ch%d_%guA.mp4', ch, cur);
         write_dff_video(fullfile(results(r).cond_dir, mean_video_fname), Mv, results(r).t_s, final_mask, ...
-            sprintf('Ch %d | %g uA | mean (n=%d)', ch, cur, results(r).n_trials), ...
+            sprintf('Ch %d | %g uA | mean (n=%d) | M1', ch, cur, results(r).n_trials), ...
             cond_clim, cmap, video_frame_rate_fps, video_quality);
         fprintf('Saved mean video: %s\n', mean_video_fname);
     end
@@ -411,11 +400,11 @@ end
 %% -------------------------
 % SAVE SUMMARY
 % -------------------------
-summary_file = fullfile(save_dir, 'dff_results_summary.mat');
-save(summary_file, 'results', 'final_mask', 't_s', 'baseline_idx', ...
-     'Fs', 'pre_sec', 'post_sec', '-v7.3');
+summary_file = fullfile(method1_dir, 'dff_m1_results_summary.mat');
+save(summary_file, 'results', 'final_mask', 't_s', 'Fs', 'pre_sec', 'post_sec', ...
+     'slope_map', 'intercept_map', '-v7.3');
 
-fprintf('\nDone.\nAll outputs in:\n  %s\n', save_dir);
+fprintf('\nDone.\nAll outputs in:\n  %s\n', method1_dir);
 fprintf('Conditions processed: %d\n', numel(results));
 
 %% =========================
@@ -467,14 +456,7 @@ end
 
 function write_dff_video(video_file, movie_stack, time_axis_sec, final_mask, ...
     title_prefix, clim_range, cmap, frame_rate, quality)
-% Writes an MP4 of a dF/F(x,y,t) movie with the brain-mask boundary overlaid.
-% Pixels outside final_mask are rendered as one solid color (mask_color)
-% rather than their raw dF/F values — those are noisy/near-zero-baseline
-% outside the brain and otherwise flicker frame-to-frame ("snowflakes").
-% title_prefix is shown alongside each frame's time, e.g.
-%   'Ch 16 | 7 uA | trial 12'  or  'Ch 16 | 7 uA | mean (n=28)'
-
-mask_color = [0.15 0.15 0.15];  % solid color for pixels outside the brain mask
+mask_color = [0.15 0.15 0.15];
 
 [~, ~, n_frames] = size(movie_stack);
 fig = figure('Color', 'w', 'Visible', 'off', 'Position', [80 80 700 650]);
@@ -485,7 +467,7 @@ writer.FrameRate = frame_rate;
 writer.Quality   = quality;
 open(writer);
 
-img_handle = image(ax, dff_frame_to_rgb(movie_stack(:, :, 1), final_mask, clim_range, cmap, mask_color));
+img_handle = image(ax, dff_frame_to_rgb(movie_stack(:,:,1), final_mask, clim_range, cmap, mask_color));
 axis(ax, 'image'); axis(ax, 'off');
 set(ax, 'YDir', 'normal');
 hold(ax, 'on');
@@ -500,13 +482,12 @@ drawnow;
 
 target_frame_size = [];
 for k = 1:n_frames
-    set(img_handle, 'CData', dff_frame_to_rgb(movie_stack(:, :, k), final_mask, clim_range, cmap, mask_color));
+    set(img_handle, 'CData', dff_frame_to_rgb(movie_stack(:,:,k), final_mask, clim_range, cmap, mask_color));
     set(title_handle, 'String', sprintf('%s | t = %+.2f s', title_prefix, time_axis_sec(k)));
-
     drawnow;
     frame_rgb = capture_consistent_frame(fig, target_frame_size);
     if isempty(target_frame_size)
-        target_frame_size = size(frame_rgb(:, :, 1));
+        target_frame_size = size(frame_rgb(:,:,1));
     end
     writeVideo(writer, frame_rgb);
 end
@@ -516,32 +497,24 @@ close(fig);
 end
 
 function rgb = dff_frame_to_rgb(frame, mask, clim_range, cmap, mask_color)
-% Maps a single dF/F frame to RGB through cmap/clim_range, then overwrites
-% every pixel outside mask with a fixed solid color (regardless of whether
-% its underlying value is NaN or just noisy out-of-brain signal).
-n = size(cmap, 1);
+n      = size(cmap, 1);
 scaled = (frame - clim_range(1)) / (clim_range(2) - clim_range(1));
 scaled(~isfinite(scaled)) = 0;
-idx = uint8(min(max(round(scaled * (n - 1)), 0), n - 1));
-rgb = ind2rgb(idx, cmap);
-
+idx    = uint8(min(max(round(scaled * (n - 1)), 0), n - 1));
+rgb    = ind2rgb(idx, cmap);
 for c = 1:3
-    chan = rgb(:, :, c);
+    chan       = rgb(:,:,c);
     chan(~mask) = mask_color(c);
-    rgb(:, :, c) = chan;
+    rgb(:,:,c)  = chan;
 end
 end
 
 function frame_rgb = capture_consistent_frame(fig, target_frame_size)
 frame_struct = getframe(fig);
-frame_rgb = frame2im(frame_struct);
-
-if isempty(target_frame_size)
-    return;
-end
-
-if ~isequal(size(frame_rgb, 1), target_frame_size(1)) || ...
-        ~isequal(size(frame_rgb, 2), target_frame_size(2))
+frame_rgb    = frame2im(frame_struct);
+if isempty(target_frame_size), return; end
+if ~isequal(size(frame_rgb,1), target_frame_size(1)) || ...
+        ~isequal(size(frame_rgb,2), target_frame_size(2))
     frame_rgb = imresize(frame_rgb, target_frame_size);
 end
 end
@@ -577,7 +550,6 @@ end
 end
 
 function cmap = bwr_colormap(n)
-% Blue-white-red diverging colormap, symmetric around zero.
 if nargin < 1, n = 256; end
 half = floor(n / 2);
 rest = n - half;

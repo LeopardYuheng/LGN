@@ -54,27 +54,27 @@ from pathlib import Path
 MATLAB_EXE = r"C:\Program Files\MATLAB\R2026a\bin\matlab.exe"
 
 # Folder containing run_consensus_m1_batch.m, get_v1_boundary.m, etc.
-SCRIPT_DIR = r"C:\Project\LGN_coworktest\analysis\longitudinal_stim_parameter_survey"
+SCRIPT_DIR = r"C:\Projects\LGN\data analysis pipeline\analysis\longitudinal_stim_parameter_survey"
 
 # Condition folders, each holding per-trial Method 1 movies from step 5_B2:
 #   .../method1/ch{N}_{I}uA/dff_m1_ch{N}_{I}uA_trial{K}.mat
 # All channel-current condition subfolders under COND_ROOT are analysed.
-COND_ROOT = r"C:\Project\LGN_analysis_results\LGN11_20260326_experiment\dFFresult_method1\method1\method1"
+COND_ROOT = r"C:\Projects\LGN\result\LGN24_06172026\method1 prethreshold analysis\method1"
 COND_DIRS = sorted(
     str(p) for p in Path(COND_ROOT).iterdir()
     if p.is_dir() and (list(p.glob("dff_m1_*_trial*.mat")) or list(p.glob("v1_dff_m1_*_trial*.mat")))
 )
 
 # Root output folder. Each condition gets its own subfolder inside this root.
-SAVE_DIR = r"C:\Project\LGN_analysis_results\LGN11_20260326_experiment\consensus_dFFresult_method1_9D"
+SAVE_DIR = r"C:\Projects\LGN\result\LGN24_06172026\step_7D_result"
 
 # Significance multipliers (threshold = n_std * each trial's pre-stim std).
-N_STD_LIST = [1,2,3]
+N_STD_LIST = [1]
 
 # Consensus counts: a pixel is consensus-active at time t if active in at
 # least this many trials. Default 25 (of e.g. 30). Each value produces its
 # own set of outputs; the value is clamped to the number of trials available.
-MIN_TRIALS_LIST = [25]
+MIN_TRIALS_LIST = [20]
 
 # Step 9_D ONLY: time-window half-width (seconds). A pixel counts as activated/
 # suppressed at time t if it crosses threshold anywhere in [t-WINDOW_S, t+WINDOW_S].
@@ -84,7 +84,7 @@ WINDOW_S = 0.1
 # V1 boundary overlay (always on). Point this at the day_setup .mat containing
 # retino_align.V1_mask_stim (from step 6). The whole-brain consensus result is
 # unchanged; the V1 boundary is only drawn on the figures/videos.
-V1_SOURCE_FILE = r"C:\Project\LGN_analysis_results\LGN11_20260326_experiment\retino_map_alignment\LGN11_20260326_reference_mask_and_retino_alignment.mat"
+V1_SOURCE_FILE = r"C:\Projects\LGN\result\LGN24_06172026\LGN24_20260617_day_setup.mat"
 
 # Set True to also export each consensus-count movie as an MP4 (slow).
 EXPORT_VIDEO = False
@@ -224,4 +224,26 @@ def main():
     results = []
     total_start = time.time()
     for i, (cond_dir, n_std) in enumerate(combos, 1):
-        success, elapsed = run_one_c
+        success, elapsed = run_one_condition(cond_dir, n_std, i, n_runs)
+        results.append((f"{Path(cond_dir).name} | {nstd_tag(n_std)}", success, elapsed))
+    total_elapsed = time.time() - total_start
+
+    n_ok   = sum(1 for _, ok, _ in results if ok)
+    n_fail = n_runs - n_ok
+    print(f"\n{'=' * 60}")
+    print(f"  Summary  ({n_runs} run(s) over {n_cond} condition(s)  |  total {total_elapsed:.1f} s)")
+    print(f"{'=' * 60}")
+    for name, ok, elapsed in results:
+        status = "[OK]  " if ok else "[FAIL]"
+        print(f"  {status}  {name}  ({elapsed:.1f} s)")
+    print()
+    if n_fail == 0:
+        print(f"All {n_ok} run(s) processed successfully.")
+        print(f"Outputs are in subfolders of:\n  {SAVE_DIR}")
+    else:
+        print(f"{n_ok} succeeded, {n_fail} failed.  Check MATLAB output above for details.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

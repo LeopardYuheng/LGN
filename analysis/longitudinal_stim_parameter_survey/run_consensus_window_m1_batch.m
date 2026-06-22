@@ -308,15 +308,10 @@ for c = 1:3
 end
 end
 
-function overlay_outlines(ax, always_nan_mask, consensus_frame, V1_mask, brain_color, v1_color)
-% Brain boundary (always) + magenta consensus contour (if consensus_frame
-% given and non-empty) + optional V1 boundary.
-consensus_color = [1.00 0.10 0.80];   % magenta consensus contour
+function overlay_outlines(ax, always_nan_mask, ~, V1_mask, brain_color, v1_color)
+% Brain boundary (always) + optional V1 boundary.
 if any(~always_nan_mask(:))
     visboundaries(ax, ~always_nan_mask, 'Color', brain_color, 'LineWidth', 0.6);
-end
-if ~isempty(consensus_frame) && any(consensus_frame(:))
-    visboundaries(ax, consensus_frame, 'Color', consensus_color, 'LineWidth', 0.8);
 end
 if ~isempty(V1_mask) && any(V1_mask(:))
     visboundaries(ax, V1_mask, 'Color', v1_color, 'LineWidth', 1.0);
@@ -337,4 +332,27 @@ title_handle = title(ax, '', 'Interpreter', 'none');
 colormap(ax, cmap); clim(ax, [-n_used n_used]);
 cb = colorbar(ax, 'eastoutside'); cb.Label.String = 'net consensus (act - sup)';
 drawnow;
-target_fra
+target_frame_size = [];
+for k = 1:n_frames
+    set(img_handle, 'CData', net_count_to_rgb(net_count(:, :, k), always_nan_mask, n_used, cmap, color_outside));
+    delete(findobj(ax, 'Type', 'line'));
+    overlay_outlines(ax, always_nan_mask, consensus(:, :, k), V1_mask, brain_color, v1_color);
+    set(title_handle, 'String', sprintf('%s | t = %+.2f s | consensus(>=%d): %d px', ...
+        cond_label, t_s(k), min_trials, sum(sum(consensus(:, :, k)))));
+    drawnow;
+    frame_rgb = frame2im(getframe(fig));
+    if isempty(target_frame_size)
+        target_frame_size = size(frame_rgb(:, :, 1));
+    elseif ~isequal(size(frame_rgb, 1), target_frame_size(1)) || ...
+            ~isequal(size(frame_rgb, 2), target_frame_size(2))
+        frame_rgb = imresize(frame_rgb, target_frame_size);
+    end
+    writeVideo(writer, frame_rgb);
+end
+close(writer); close(fig);
+end
+
+function cmap = rainbow_colormap(n)
+if nargin < 1, n = 256; end
+cmap = jet(n);
+end

@@ -1,5 +1,6 @@
 % combined alt.mat, azi.mat, additional_maps.mat into one input file
-retino_dir = '\\10.129.151.108\xieluanlabs\xl_stroke\Xiaorong_PC_OKRData\Mapping\LGN11\LGN11_01162026\retino';
+retino_dir = uigetdir(pwd, 'Select folder that contains the alt.mat, azi.mat, additional_maps.mat for the object')
+
 
 tmp = load(fullfile(retino_dir, 'azi.mat'));           azi = tmp.azi;
 tmp = load(fullfile(retino_dir, 'alt.mat'));           alt = tmp.alt;
