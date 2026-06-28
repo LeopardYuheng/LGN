@@ -163,7 +163,7 @@ display-only and can be skipped (Cancel = none).
 #### Step 7_C — Per-trial cross-trial consensus region *(main analysis)*
 
 [consensus_region_method1_7C.m](analysis/longitudinal_stim_parameter_survey/consensus_region_method1_7C.m) — interactive
-[run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) — headless batch, driven by [run_9C_batch.py](run_9C_batch.py)
+[run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) — headless batch, driven by [run_7C_batch.py](run_7C_batch.py)
 
 Analyzes **every trial of a channel-current condition individually** and
 combines them by per-timepoint voting. Consumes the per-trial Method 1 movies
@@ -204,14 +204,14 @@ Outputs per `(n_std, min_trials)`, tagged
 - Interactive viewer (single-condition script): time slider + static region
   map; click pixels to plot activated / suppressed trial counts over time
 
-Batch runner (`run_9C_batch.py`) sweeps `N_STD_LIST` and `MIN_TRIALS_LIST`,
+Batch runner (`run_7C_batch.py`) sweeps `N_STD_LIST` and `MIN_TRIALS_LIST`,
 writes each `n_std` to its own folder (`ch{N}_{I}uA_{n}sigma/`), overlays the
 V1 boundary from `V1_SOURCE_FILE`.
 
 #### Step 7_D — Time-window consensus region *(latency-robust variant of 7_C)*
 
 [consensus_region_window_method1_7D.m](analysis/longitudinal_stim_parameter_survey/consensus_region_window_method1_7D.m) — interactive
-[run_consensus_window_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_window_m1_batch.m) — headless batch, driven by [run_9D_batch.py](run_9D_batch.py)
+[run_consensus_window_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_window_m1_batch.m) — headless batch, driven by [run_7D_batch.py](run_7D_batch.py)
 
 Identical to 7_C with one change to the per-trial activation rule. A pixel
 counts as activated/suppressed at time `t` if it crosses threshold **anywhere
@@ -440,7 +440,7 @@ whole-brain; V1 is drawn only as a contour.
 ### Step 7_C — Per-trial cross-trial consensus region, Method 1
 
 [consensus_region_method1_7C.m](analysis/longitudinal_stim_parameter_survey/consensus_region_method1_7C.m) — interactive
-[run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) — headless batch, driven by [run_9C_batch.py](run_9C_batch.py)
+[run_consensus_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_m1_batch.m) — headless batch, driven by [run_7C_batch.py](run_7C_batch.py)
 
 Analyzes every trial of a channel-current condition individually and combines
 them by per-timepoint voting. Consumes the per-trial Method 1 movies from step
@@ -483,7 +483,7 @@ pass across `min_trials` values.
 ### Step 7_D — Time-window consensus region, Method 1 (latency-robust 7_C)
 
 [consensus_region_window_method1_7D.m](analysis/longitudinal_stim_parameter_survey/consensus_region_window_method1_7D.m) — interactive
-[run_consensus_window_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_window_m1_batch.m) — headless batch, driven by [run_9D_batch.py](run_9D_batch.py)
+[run_consensus_window_m1_batch.m](analysis/longitudinal_stim_parameter_survey/run_consensus_window_m1_batch.m) — headless batch, driven by [run_7D_batch.py](run_7D_batch.py)
 
 Identical to 7_C with one change to the per-trial activation rule. A pixel
 counts as activated/suppressed at time `t` if it crosses threshold **anywhere

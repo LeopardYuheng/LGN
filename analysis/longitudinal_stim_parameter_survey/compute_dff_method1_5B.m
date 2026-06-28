@@ -29,8 +29,7 @@ close all; clc; clear; fclose('all');
 %% -------------------------
 % USER SETTINGS
 % -------------------------
-display_step_s    = 0.1;   % spacing between displayed frames in the figure (seconds)
-n_prestim_display = 9;     % number of pre-stim frames to show
+display_step_s = 0.1;   % frame-grid spacing (seconds); all frames always saved
 
 use_auto_clim = true;
 manual_clim   = [-0.02  0.02];
@@ -94,6 +93,20 @@ final_mask = logical(M.reference_mask_struct.final_mask);
 fprintf('Brain mask: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask(:)));
 
 %% -------------------------
+% OPTIONAL: V1 BOUNDARY OVERLAY
+% -------------------------
+v1_outline_color = [0.10 0.85 0.30];
+[v1_fn, v1_fp] = uigetfile('*.mat', ...
+    'Optional: select day_setup with V1 boundary from step 6 (Cancel = none)');
+if isequal(v1_fn, 0)
+    V1_mask = [];
+    fprintf('No V1 boundary overlay selected.\n');
+else
+    V1_mask = load_v1_mask(fullfile(v1_fp, v1_fn), [H W]);
+    if ~isempty(V1_mask), fprintf('V1 boundary loaded: %s\n', v1_fn); end
+end
+
+%% -------------------------
 % LOAD DRIFT MODEL (from step 4)
 % -------------------------
 [gb_fn, gb_fp] = uigetfile('*.mat', 'Select baseline_drift_4.mat (from step 4)');
@@ -152,6 +165,19 @@ fprintf('Camera rate: %.2f Hz  |  Pre: %.1f s  |  Post: %.1f s  |  %d frames/tri
     Fs, pre_sec, post_sec, T);
 
 %% -------------------------
+% DISPLAY TIME WINDOW (interactive)
+% -------------------------
+win_ans = inputdlg( ...
+    {sprintf('Frame-grid start time (s)  [recording covers %.1f to +%.1f s]:', -pre_sec, post_sec), ...
+     'Frame-grid end   time (s):'}, ...
+    'Frame-grid display window', [1 60], {'-0.2', '1.2'});
+if isempty(win_ans), error('Display window not specified. Cancelled.'); end
+display_tmin = str2double(win_ans{1});
+display_tmax = str2double(win_ans{2});
+assert(isfinite(display_tmin) && isfinite(display_tmax) && display_tmin < display_tmax, ...
+    'display_tmin must be less than display_tmax.');
+
+%% -------------------------
 % UNPACK TRIAL INFORMATION
 % -------------------------
 [frame_idx, channels, currents, trial_index] = unpack_day_pointer_entries(day_pointer.entries);
@@ -169,20 +195,19 @@ fprintf('Valid trials: %d\n', sum(valid));
 %% -------------------------
 % FRAME DISPLAY SELECTION
 % -------------------------
-prestim_display_t  = -display_step_s * (n_prestim_display : -1 : 1);
-poststim_display_t = 0 : display_step_s : post_sec;
-display_t_all      = [prestim_display_t, poststim_display_t];
-
+display_t_all = display_tmin : display_step_s : display_tmax;
 display_frame_idx = zeros(size(display_t_all));
 for di = 1:numel(display_t_all)
-    [~, display_frame_idx(di)] = min(abs(t_s - display_t_ ...
-        all(di)));
+    [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
 end
+display_frame_idx = unique(display_frame_idx, 'stable');
+display_t_all     = t_s(display_frame_idx);
 
 %% -------------------------
 % INTERACTIVE CONDITION SELECTION
+% Sorted by channel number then current level (same order as step 7_C/7_D).
 % -------------------------
-unique_pairs = unique([channels, currents], 'rows', 'stable');
+unique_pairs = unique([channels, currents], 'rows');   % sorted: channel first, then current
 
 condition_strs = arrayfun( ...
     @(r) sprintf('Ch %d  |  %g uA', unique_pairs(r,1), unique_pairs(r,2)), ...
@@ -332,7 +357,8 @@ if make_trial_videos
 
             write_dff_video(video_fpath, Strial.dff_movie, t_s, final_mask, ...
                 sprintf('Ch %d | %g uA | %s | M1', ch, cur, trial_label), ...
-                data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality);
+                data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality, ...
+                V1_mask, v1_outline_color);
 
             fprintf('  Saved trial video: %s.mp4\n', trial_base);
         end
@@ -371,6 +397,7 @@ for r = 1:numel(results)
         clim(ax, cond_clim);
         hold(ax, 'on');
         visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
+        if ~isempty(V1_mask), visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0); end
         title(ax, sprintf('t = %.1f s', display_t_all(di)), 'FontSize', 8);
         last_ax = ax;
     end
@@ -391,7 +418,7 @@ for r = 1:numel(results)
         mean_video_fname = sprintf('mean_dff_m1_ch%d_%guA.mp4', ch, cur);
         write_dff_video(fullfile(results(r).cond_dir, mean_video_fname), Mv, results(r).t_s, final_mask, ...
             sprintf('Ch %d | %g uA | mean (n=%d) | M1', ch, cur, results(r).n_trials), ...
-            cond_clim, cmap, video_frame_rate_fps, video_quality);
+            cond_clim, cmap, video_frame_rate_fps, video_quality, V1_mask, v1_outline_color);
         fprintf('Saved mean video: %s\n', mean_video_fname);
     end
 
@@ -455,7 +482,9 @@ if ~(hi > lo), cl = [-0.02 0.02]; else, cl = [lo hi]; end
 end
 
 function write_dff_video(video_file, movie_stack, time_axis_sec, final_mask, ...
-    title_prefix, clim_range, cmap, frame_rate, quality)
+    title_prefix, clim_range, cmap, frame_rate, quality, V1_mask, v1_color)
+if nargin < 10, V1_mask  = []; end
+if nargin < 11, v1_color = [0.10 0.85 0.30]; end
 mask_color = [0.15 0.15 0.15];
 
 [~, ~, n_frames] = size(movie_stack);
@@ -472,6 +501,7 @@ axis(ax, 'image'); axis(ax, 'off');
 set(ax, 'YDir', 'normal');
 hold(ax, 'on');
 visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
+if ~isempty(V1_mask), visboundaries(ax, V1_mask, 'Color', v1_color, 'LineWidth', 1.0); end
 
 title_handle = title(ax, '', 'Interpreter', 'none');
 colormap(ax, cmap);
@@ -546,6 +576,24 @@ for i = 1:numel(entries)
     else
         trial_index = [trial_index; nan(n_i, 1)]; %#ok<AGROW>
     end
+end
+end
+
+function V1_mask = load_v1_mask(fpath, expected_size)
+V1_mask = [];
+try
+    D = load(fpath);
+    if isfield(D, 'retino_align') && isfield(D.retino_align, 'V1_mask_stim')
+        V1_mask = logical(D.retino_align.V1_mask_stim);
+    elseif isfield(D, 'day_setup') && isfield(D.day_setup, 'retino_align')
+        V1_mask = logical(D.day_setup.retino_align.V1_mask_stim);
+    end
+    if ~isempty(expected_size) && ~isempty(V1_mask) && ~isequal(size(V1_mask), expected_size)
+        warning('V1_mask size mismatch — overlay skipped.');
+        V1_mask = [];
+    end
+catch ME
+    warning('Could not load V1 boundary: %s', ME.message);
 end
 end
 

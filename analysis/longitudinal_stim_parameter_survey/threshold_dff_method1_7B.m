@@ -1,267 +1,304 @@
-%% threshold_dff_method1_9B.m
-% Step 9_B: Per-pixel significance thresholding of a Method 1 dF/F movie.
+%% threshold_dff_method1_7B.m
+% Step 7_B: Per-pixel significance thresholding of Method-1 dF/F movies.
 %
-% Uses the same baseline-subtraction and thresholding logic as step 9_C:
+% Scans a step-5_B output folder for mean_dff_m1_ch*.mat files, lets the
+% user select which channel-current conditions to process (sorted by channel
+% then current), then for each selected condition:
 %
-%   baseline_dff(x,y) = mean( dF/F(x,y, t<0) )   pre-stim mean of this movie
-%   pixel_std(x,y)    = std(  dF/F(x,y, t<0) )   pre-stim std  of this movie
-%   sig_threshold     = n_std * pixel_std
+%   baseline_dff(x,y) = mean( dF/F(x,y, t<0) )   pre-stim mean
+%   pixel_std(x,y)    = std(  dF/F(x,y, t<0) )   pre-stim std
+%   suprathreshold    = |dF/F − baseline_dff| > n_std * pixel_std
 %
-%   A pixel is suprathreshold at time t when
-%     |dF/F(x,y,t) - baseline_dff(x,y)| > sig_threshold(x,y)
-%
-% No external baseline file is required — the threshold is derived entirely
-% from the pre-stim frames of the supplied movie.
-%
-% Requires:
-%   - A dF/F movie .mat from step 5_B2
-%     (contains dff_movie or mean_dff_movie, and t_s)
+% No external baseline file required. Same thresholding logic as step 7_C.
+% Optional V1 boundary overlay; interactive display time window.
+% Interactive pixel-picking viewer shown only for single-condition runs.
 
 close all; clc; clear; fclose('all');
 
 %% -------------------------
 % USER SETTINGS
 % -------------------------
-mask_color_outside  = [0.15 0.15 0.15];  % always-NaN (out-of-mask) pixels
-mask_color_inactive = [0.55 0.55 0.55];  % in-mask pixels within +/- threshold band
-
+mask_color_outside  = [0.15 0.15 0.15];
+mask_color_inactive = [0.55 0.55 0.55];
 video_frame_rate_fps = 10;
 video_quality        = 95;
-
-display_step_s    = 0.1;
-n_prestim_display = 9;
+display_step_s       = 0.1;
 
 %% -------------------------
-% SELECT INPUT MOVIE
+% SELECT ROOT FOLDER + CONDITIONS
 % -------------------------
-[mv_fn, mv_fp] = uigetfile('*.mat', ...
-    'Select a Method 1 dF/F movie (dff_m1_ch*_trial*.mat or mean_dff_m1_ch*.mat)');
-if isequal(mv_fn, 0), error('No file selected.'); end
+root_dir = uigetdir(pwd, 'Select step-5_B output folder (contains method1/ch{N}_{I}uA/ subfolders)');
+if isequal(root_dir, 0), error('No folder selected.'); end
 
-S = load(fullfile(mv_fp, mv_fn));
-if isfield(S, 'dff_movie')
-    movie = S.dff_movie;
-elseif isfield(S, 'mean_dff_movie')
-    movie = S.mean_dff_movie;
-else
-    error('Selected file must contain "dff_movie" or "mean_dff_movie".');
+mat_files = dir(fullfile(root_dir, '**', 'mean_dff_m1_ch*uA.mat'));
+assert(~isempty(mat_files), 'No mean_dff_m1_ch*.mat files found under:\n  %s', root_dir);
+
+chs  = nan(numel(mat_files), 1);
+curs = nan(numel(mat_files), 1);
+for i = 1:numel(mat_files)
+    tok = regexp(mat_files(i).name, 'ch(\d+)_([\d.]+)uA', 'tokens', 'once');
+    if ~isempty(tok)
+        chs(i)  = str2double(tok{1});
+        curs(i) = str2double(tok{2});
+    end
 end
-assert(isfield(S, 't_s'), 'Selected file is missing "t_s" (time axis).');
+valid = isfinite(chs) & isfinite(curs);
+mat_files = mat_files(valid);
+chs  = chs(valid);
+curs = curs(valid);
+[~, sord] = sortrows([chs curs]);
+mat_files = mat_files(sord);
+chs       = chs(sord);
+curs      = curs(sord);
 
-t_s = double(S.t_s(:)');
-[H, W, T] = size(movie);
-assert(numel(t_s) == T, 't_s length (%d) does not match movie frame count (%d).', numel(t_s), T);
+cond_strs = arrayfun(@(i) sprintf('Ch %d  |  %g uA', chs(i), curs(i)), ...
+    (1:numel(mat_files))', 'UniformOutput', false);
 
-[~, base_name, ~] = fileparts(mv_fn);
-tok = regexp(base_name, '(ch\d+_[\d.]+uA(?:_trial\d+)?)', 'tokens', 'once');
-cond_label = tok{1};
-if isempty(cond_label), cond_label = base_name; end
+[sel_idx, ok] = listdlg( ...
+    'Name',          'Select conditions to threshold', ...
+    'PromptString',  'Available conditions (Ctrl+click for multiple):', ...
+    'ListString',    cond_strs, ...
+    'SelectionMode', 'multiple', ...
+    'ListSize',      [320 260], ...
+    'OKString',      'Analyze selected', ...
+    'CancelString',  'Cancel');
+if ~ok || isempty(sel_idx), error('No conditions selected.'); end
 
-fprintf('Loaded movie: %s   (%d x %d x %d frames)\n', mv_fn, H, W, T);
-fprintf('Condition label: %s\n', cond_label);
+mat_files = mat_files(sel_idx);
+chs       = chs(sel_idx);
+curs      = curs(sel_idx);
+n_sel     = numel(mat_files);
+fprintf('Selected %d condition(s):\n', n_sel);
+for i = 1:n_sel, fprintf('  Ch %d  |  %g uA\n', chs(i), curs(i)); end
 
 %% -------------------------
 % OUTPUT FOLDER
 % -------------------------
-save_dir = uigetdir(mv_fp, 'Select output folder for thresholded movie / figures');
+save_dir = uigetdir(root_dir, 'Select output folder for thresholded movies / figures');
 if isequal(save_dir, 0), error('No output folder selected.'); end
 if ~exist(save_dir, 'dir'), mkdir(save_dir); end
 
 %% -------------------------
 % OPTIONAL: V1 BOUNDARY OVERLAY
-% (whole-brain result; V1 drawn only as a contour, never used to crop)
 % -------------------------
-v1_outline_color = [0.10 0.85 0.30];   % green V1 boundary
+v1_outline_color = [0.10 0.85 0.30];
+
+S0 = load(fullfile(mat_files(1).folder, mat_files(1).name));
+if isfield(S0, 'mean_dff_movie'), tmp = S0.mean_dff_movie;
+else,                              tmp = S0.dff_movie; end
+[H0, W0, ~] = size(tmp); clear tmp S0;
+
 [v1_fn, v1_fp] = uigetfile('*.mat', ...
-    'Optional: select a day_setup with a V1 boundary to overlay (Cancel = none)');
+    'Optional: select day_setup with V1 boundary from step 6 (Cancel = none)');
 if isequal(v1_fn, 0)
     V1_mask = [];
     fprintf('No V1 boundary overlay selected.\n');
 else
-    V1_mask = get_v1_boundary(fullfile(v1_fp, v1_fn), [H W]);
-    if ~isempty(V1_mask), fprintf('V1 boundary overlay loaded from: %s\n', v1_fn); end
+    V1_mask = load_v1_mask(fullfile(v1_fp, v1_fn), [H0 W0]);
+    if ~isempty(V1_mask), fprintf('V1 boundary loaded: %s\n', v1_fn); end
 end
 
 %% -------------------------
-% CHOOSE SIGNIFICANCE THRESHOLD MULTIPLIER (n_std)
+% DISPLAY TIME WINDOW (interactive)
 % -------------------------
-default_n_std = 3;
-sigma_char    = char(963);
-answer = inputdlg(...
-    sprintf(['Significance threshold = n_std %s pixel_std  (pre-stim std of this movie)\n\n' ...
-             'Expected fraction of Gaussian baseline crossing by chance:\n' ...
-             '  n_std = 1  ->  ~32%%\n' ...
-             '  n_std = 2  ->  ~5%%\n' ...
-             '  n_std = 3  ->  ~0.3%%\n\n' ...
-             'Enter n_std:'], sigma_char), ...
-    'Step 9_B: significance threshold multiplier', [1 60], {num2str(default_n_std)});
-if isempty(answer)
-    error('No threshold multiplier entered.');
-end
-n_std = str2double(answer{1});
-assert(isfinite(n_std) && n_std > 0, 'Threshold multiplier must be a positive number.');
+win_ans = inputdlg( ...
+    {'Frame-grid start time (s):', 'Frame-grid end   time (s):'}, ...
+    'Frame-grid display window', [1 50], {'-0.2', '1.2'});
+if isempty(win_ans), error('Display window not specified. Cancelled.'); end
+display_tmin = str2double(win_ans{1});
+display_tmax = str2double(win_ans{2});
+assert(isfinite(display_tmin) && isfinite(display_tmax) && display_tmin < display_tmax, ...
+    'display_tmin must be less than display_tmax.');
 
+%% -------------------------
+% SIGNIFICANCE THRESHOLD MULTIPLIER (n_std)
+% -------------------------
+sigma_char    = char(963);
+default_n_std = 3;
+answer = inputdlg(...
+    sprintf(['|dF/F − baseline| > n_std %s pixel_std  (pre-stim std)\n\n' ...
+             '  n_std = 1 -> ~32%% baseline crossing chance\n' ...
+             '  n_std = 2 -> ~5%%\n' ...
+             '  n_std = 3 -> ~0.3%%\n\nEnter n_std:'], sigma_char), ...
+    'Step 7_B: significance threshold multiplier', [1 60], {num2str(default_n_std)});
+if isempty(answer), error('No threshold multiplier entered.'); end
+n_std = str2double(answer{1});
+assert(isfinite(n_std) && n_std > 0, 'n_std must be a positive number.');
 if n_std == round(n_std)
     n_std_label = sprintf('%d%s', n_std, sigma_char);
 else
     n_std_label = sprintf('%g%s', n_std, sigma_char);
 end
-out_tag = sprintf('%s_%s_m1', base_name, n_std_label);
+fprintf('Threshold: |dF/F − baseline| > %g * pixel_std\n', n_std);
 
 %% -------------------------
-% PRE-STIM BASELINE AND THRESHOLD (same convention as step 9_C)
+% MAIN LOOP — one pass per selected condition
 % -------------------------
-prestim_idx = find(t_s < 0);
-assert(~isempty(prestim_idx), 'No pre-stim frames (t_s < 0) found in this movie.');
-
-baseline_dff  = mean(movie(:,:,prestim_idx), 3, 'omitnan');   % H x W
-pixel_std     = std( movie(:,:,prestim_idx), 0, 3, 'omitnan'); % H x W
-sig_threshold = n_std * pixel_std;                             % H x W
-
-fprintf('Pre-stim frames: %d  |  threshold: %g * pixel_std\n', numel(prestim_idx), n_std);
-
-%% -------------------------
-% BUILD SIGNIFICANCE MASK AND THRESHOLDED MOVIE
-% -------------------------
-always_nan_mask = all(isnan(movie), 3);   % H x W
-
-% Subtract pre-stim baseline before thresholding (same as 9_C)
-movie_centered = movie - baseline_dff;    % H x W x T  (baseline_dff broadcasts)
-sig_mask       = abs(movie_centered) > sig_threshold;   % H x W x T
-
-thresh_movie = movie;
-thresh_movie(~sig_mask) = NaN;
-
-fprintf('In-mask pixels: %d / %d\n', sum(~always_nan_mask(:)), H * W);
-
-%% -------------------------
-% SAVE THRESHOLDED MOVIE
-% -------------------------
-thresh_fname = sprintf('thresh_%s.mat', out_tag);
-thresh_fpath = fullfile(save_dir, thresh_fname);
-save(thresh_fpath, 'thresh_movie', 'sig_mask', 'baseline_dff', 'pixel_std', ...
-    'sig_threshold', 'n_std', 'always_nan_mask', 't_s', '-v7.3');
-fprintf('Saved thresholded movie: %s\n', thresh_fname);
-
-%% -------------------------
-% COLOR LIMITS
-% -------------------------
-finite_vals = movie(isfinite(movie));
-if ~isempty(finite_vals)
-    q           = quantile(finite_vals, [0.01 0.99]);
-    clim_to_use = [-max(abs(q))  max(abs(q))];
-else
-    clim_to_use = [-0.02 0.02];
-end
 cmap = bwr_colormap();
 
-%% -------------------------
-% FRAME-GRID FIGURE
-% -------------------------
-pre_sec  = -t_s(1);
-post_sec = t_s(end);
+last_c = struct('movie', [], 'sig_mask', [], 'always_nan_mask', [], ...
+    't_s', [], 'baseline_dff', [], 'sig_threshold', [], ...
+    'clim_to_use', [], 'cond_label', '', 'cond_save_dir', '');
 
-prestim_display_t  = -display_step_s * (n_prestim_display : -1 : 1);
-poststim_display_t = 0 : display_step_s : post_sec;
-display_t_all      = [prestim_display_t, poststim_display_t];
+for ci = 1:n_sel
+    mv_fpath   = fullfile(mat_files(ci).folder, mat_files(ci).name);
+    [~, base_name] = fileparts(mat_files(ci).name);
 
-display_frame_idx = zeros(size(display_t_all));
-for di = 1:numel(display_t_all)
-    [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
-end
+    S = load(mv_fpath);
+    if isfield(S, 'mean_dff_movie'),  movie = S.mean_dff_movie;
+    elseif isfield(S, 'dff_movie'),   movie = S.dff_movie;
+    else, error('File missing dff_movie/mean_dff_movie:\n  %s', mv_fpath); end
+    assert(isfield(S, 't_s'), 'Missing t_s in:\n  %s', mv_fpath);
 
-n_display = numel(display_frame_idx);
-n_cols    = min(7, n_display);
-n_rows    = ceil(n_display / n_cols);
+    t_s = double(S.t_s(:)');
+    [H, W, T] = size(movie);
+    tok = regexp(base_name, '(ch\d+_[\d.]+uA(?:_trial\d+)?)', 'tokens', 'once');
+    cond_label = tok{1};
+    if isempty(cond_label), cond_label = base_name; end
 
-fig = figure('Color', 'w', ...
-    'Name', sprintf('Thresholded dF/F (M1) %s', cond_label), ...
-    'Position', [50 50  min(1800, 240 * n_cols)  240 * n_rows + 70]);
-tl = tiledlayout(fig, n_rows, n_cols, 'TileSpacing', 'tight', 'Padding', 'compact');
+    fprintf('\n[%d/%d] %s  (%d x %d x %d)\n', ci, n_sel, cond_label, H, W, T);
 
-last_ax = [];
-for di = 1:n_display
-    fi = display_frame_idx(di);
-    if fi < 1 || fi > T, continue; end
+    cond_save_dir = fullfile(save_dir, sprintf('ch%d_%guA', chs(ci), curs(ci)));
+    if ~exist(cond_save_dir, 'dir'), mkdir(cond_save_dir); end
 
-    ax = nexttile(tl);
-    image(ax, thresh_frame_to_rgb(movie(:, :, fi), sig_mask(:, :, fi), always_nan_mask, ...
-        clim_to_use, cmap, mask_color_outside, mask_color_inactive));
-    axis(ax, 'image'); axis(ax, 'off');
-    set(ax, 'YDir', 'normal');
-    hold(ax, 'on');
-    visboundaries(ax, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.6);
-    if ~isempty(V1_mask), visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0); end
-    title(ax, sprintf('t = %+.1f s', t_s(fi)), 'FontSize', 8);
-    last_ax = ax;
-end
+    out_tag = sprintf('%s_%s_m1', base_name, n_std_label);
 
-if ~isempty(last_ax)
-    colormap(last_ax, cmap);
-    clim(last_ax, clim_to_use);
-    colorbar(last_ax);
-end
+    % Threshold
+    prestim_idx   = find(t_s < 0);
+    always_nan_mask = all(isnan(movie), 3);
+    baseline_dff  = mean(movie(:,:,prestim_idx), 3, 'omitnan');
+    pixel_std     = std( movie(:,:,prestim_idx), 0, 3, 'omitnan');
+    sig_threshold = n_std * pixel_std;
+    movie_centered = movie - baseline_dff;
+    sig_mask       = abs(movie_centered) > sig_threshold;
+    thresh_movie   = movie;
+    thresh_movie(~sig_mask) = NaN;
 
-title(tl, sprintf('Thresholded dF/F (|dF/F − baseline| > %g%s, Method 1)  |  %s', ...
-    n_std, sigma_char, cond_label), 'Interpreter', 'none', 'FontSize', 11);
+    fprintf('  Pre-stim frames: %d  |  In-mask pixels: %d\n', ...
+        numel(prestim_idx), sum(~always_nan_mask(:)));
 
-frame_grid_fname = sprintf('thresh_%s_frame_grid.png', out_tag);
-exportgraphics(fig, fullfile(save_dir, frame_grid_fname), 'Resolution', 150);
-close(fig);
-fprintf('Saved figure: %s\n', frame_grid_fname);
+    % Save .mat
+    thresh_fname = sprintf('thresh_%s.mat', out_tag);
+    save(fullfile(cond_save_dir, thresh_fname), ...
+        'thresh_movie', 'sig_mask', 'baseline_dff', 'pixel_std', ...
+        'sig_threshold', 'n_std', 'always_nan_mask', 't_s', '-v7.3');
+    fprintf('  Saved: %s\n', thresh_fname);
 
-%% -------------------------
-% OPTIONAL VIDEO EXPORT
-% -------------------------
-export_choice = questdlg( ...
-    sprintf('Export the thresholded movie for "%s" (Method 1) as an MP4 video?', cond_label), ...
-    'Export thresholded video?', 'Export video', 'Skip', 'Skip');
-
-if strcmp(export_choice, 'Export video')
-    video_fpath = fullfile(save_dir, sprintf('thresh_%s.mp4', out_tag));
-    write_thresh_video(video_fpath, movie, sig_mask, always_nan_mask, t_s, ...
-        sprintf('%s | M1', cond_label), clim_to_use, cmap, ...
-        mask_color_outside, mask_color_inactive, video_frame_rate_fps, video_quality, ...
-        V1_mask, v1_outline_color);
-    fprintf('Saved thresholded video: thresh_%s.mp4\n', out_tag);
-end
-
-%% -------------------------
-% PEAK-RESPONSE TIMEPOINT
-% -------------------------
-post_idx = find(t_s >= 0);
-assert(~isempty(post_idx), 'No post-stimulation frames (t_s >= 0) found in this movie.');
-
-sig_counts          = squeeze(sum(sum(sig_mask(:, :, post_idx), 1), 2));
-[~, peak_local_idx] = max(sig_counts);
-peak_idx            = post_idx(peak_local_idx);
-
-fprintf('Peak response at t = %+.2f s  (%d suprathreshold pixels)\n', ...
-    t_s(peak_idx), sig_counts(peak_local_idx));
-
-%% -------------------------
-% INTERACTIVE VIEWER + PIXEL PICKING
-% -------------------------
-picked = pick_pixels_interactively(movie, sig_mask, always_nan_mask, t_s, peak_idx, ...
-    cond_label, clim_to_use, cmap, mask_color_outside, mask_color_inactive, ...
-    V1_mask, v1_outline_color);
-
-%% -------------------------
-% PER-PIXEL dF/F(t) FIGURES FOR PICKED PIXELS
-% -------------------------
-if isempty(picked)
-    fprintf('\nNo pixels picked.\n');
-else
-    fprintf('\nGenerating dF/F(t) figures for %d picked pixel(s)...\n', size(picked, 1));
-    for pi = 1:size(picked, 1)
-        row = picked(pi, 1);
-        col = picked(pi, 2);
-        plot_pixel_timecourse(squeeze(movie(row, col, :)), t_s, baseline_dff(row, col), ...
-            sig_threshold(row, col), n_std, sigma_char, row, col, cond_label, save_dir);
+    % Color limits
+    finite_vals = movie(isfinite(movie));
+    if ~isempty(finite_vals)
+        q = quantile(finite_vals, [0.01 0.99]);
+        clim_to_use = [-max(abs(q)) max(abs(q))];
+    else
+        clim_to_use = [-0.02 0.02];
     end
+
+    % Frame-grid display indices
+    display_t_all = display_tmin : display_step_s : display_tmax;
+    display_frame_idx = zeros(size(display_t_all));
+    for di = 1:numel(display_t_all)
+        [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
+    end
+    display_frame_idx = unique(display_frame_idx, 'stable');
+    n_display = numel(display_frame_idx);
+    n_cols    = min(7, n_display);
+    n_rows    = ceil(n_display / n_cols);
+
+    % Frame-grid figure
+    fig = figure('Color', 'w', 'Visible', 'off', ...
+        'Name', sprintf('Thresholded dF/F (M1) %s', cond_label), ...
+        'Position', [50 50 min(1800, 240*n_cols) 240*n_rows + 70]);
+    tl = tiledlayout(fig, n_rows, n_cols, 'TileSpacing', 'tight', 'Padding', 'compact');
+    last_ax = [];
+    for di = 1:n_display
+        fi = display_frame_idx(di);
+        if fi < 1 || fi > T, continue; end
+        ax = nexttile(tl);
+        image(ax, thresh_frame_to_rgb(movie(:,:,fi), sig_mask(:,:,fi), always_nan_mask, ...
+            clim_to_use, cmap, mask_color_outside, mask_color_inactive));
+        axis(ax,'image'); axis(ax,'off'); set(ax,'YDir','normal'); hold(ax,'on');
+        visboundaries(ax, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.6);
+        if ~isempty(V1_mask) && isequal(size(V1_mask), [H W])
+            visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0);
+        end
+        title(ax, sprintf('t = %+.1f s', t_s(fi)), 'FontSize', 8);
+        last_ax = ax;
+    end
+    if ~isempty(last_ax)
+        colormap(last_ax, cmap); clim(last_ax, clim_to_use); colorbar(last_ax);
+    end
+    title(tl, sprintf('Thresholded dF/F (|dF/F − baseline| > %g%s, M1)  |  %s', ...
+        n_std, sigma_char, cond_label), 'Interpreter', 'none', 'FontSize', 11);
+
+    frame_grid_fname = sprintf('thresh_%s_frame_grid.png', out_tag);
+    exportgraphics(fig, fullfile(cond_save_dir, frame_grid_fname), 'Resolution', 150);
+    close(fig);
+    fprintf('  Saved: %s\n', frame_grid_fname);
+
+    % Optional video
+    export_choice = questdlg( ...
+        sprintf('Export thresholded video for "%s" (M1)?', cond_label), ...
+        'Export video?', 'Export', 'Skip', 'Skip');
+    if strcmp(export_choice, 'Export')
+        video_fpath = fullfile(cond_save_dir, sprintf('thresh_%s.mp4', out_tag));
+        write_thresh_video(video_fpath, movie, sig_mask, always_nan_mask, t_s, ...
+            sprintf('%s | M1', cond_label), clim_to_use, cmap, ...
+            mask_color_outside, mask_color_inactive, video_frame_rate_fps, video_quality, ...
+            V1_mask, v1_outline_color);
+        fprintf('  Saved video: thresh_%s.mp4\n', out_tag);
+    end
+
+    last_c.movie           = movie;
+    last_c.sig_mask        = sig_mask;
+    last_c.always_nan_mask = always_nan_mask;
+    last_c.t_s             = t_s;
+    last_c.baseline_dff    = baseline_dff;
+    last_c.sig_threshold   = sig_threshold;
+    last_c.clim_to_use     = clim_to_use;
+    last_c.cond_label      = cond_label;
+    last_c.cond_save_dir   = cond_save_dir;
 end
 
-fprintf('\nDone.\nAll outputs in:\n  %s\n', save_dir);
+fprintf('\nDone. All outputs in:\n  %s\n', save_dir);
+
+%% -------------------------
+% INTERACTIVE VIEWER + PIXEL PICKING (single-condition runs only)
+% -------------------------
+if n_sel == 1
+    movie           = last_c.movie;
+    sig_mask        = last_c.sig_mask;
+    always_nan_mask = last_c.always_nan_mask;
+    t_s             = last_c.t_s;
+    baseline_dff    = last_c.baseline_dff;
+    sig_threshold   = last_c.sig_threshold;
+    clim_to_use     = last_c.clim_to_use;
+    cond_label      = last_c.cond_label;
+    cond_save_dir   = last_c.cond_save_dir;
+
+    post_idx = find(t_s >= 0);
+    sig_counts = squeeze(sum(sum(sig_mask(:,:,post_idx), 1), 2));
+    [~, pk_loc] = max(sig_counts);
+    peak_idx    = post_idx(pk_loc);
+    fprintf('\nPeak response at t = %+.2f s  (%d suprathreshold pixels)\n', ...
+        t_s(peak_idx), sig_counts(pk_loc));
+
+    picked = pick_pixels_interactively(movie, sig_mask, always_nan_mask, t_s, peak_idx, ...
+        cond_label, clim_to_use, cmap, mask_color_outside, mask_color_inactive, ...
+        V1_mask, v1_outline_color);
+
+    if isempty(picked)
+        fprintf('No pixels picked.\n');
+    else
+        fprintf('Generating dF/F(t) figures for %d picked pixel(s)...\n', size(picked,1));
+        for pi = 1:size(picked, 1)
+            row = picked(pi,1); col = picked(pi,2);
+            plot_pixel_timecourse(squeeze(movie(row,col,:)), t_s, baseline_dff(row,col), ...
+                sig_threshold(row,col), n_std, sigma_char, row, col, cond_label, cond_save_dir);
+        end
+    end
+else
+    fprintf('\n(%d conditions processed — interactive viewer skipped for multi-condition runs.)\n', n_sel);
+end
 
 %% =========================
 % LOCAL FUNCTIONS
@@ -455,6 +492,24 @@ fig_fname = sprintf('dff_t_pixel_r%d_c%d_%s_m1.png', row, col, cond_label);
 exportgraphics(fig, fullfile(save_dir, fig_fname), 'Resolution', 150);
 close(fig);
 fprintf('  Saved figure: %s\n', fig_fname);
+end
+
+function V1_mask = load_v1_mask(fpath, expected_size)
+V1_mask = [];
+try
+    D = load(fpath);
+    if isfield(D, 'retino_align') && isfield(D.retino_align, 'V1_mask_stim')
+        V1_mask = logical(D.retino_align.V1_mask_stim);
+    elseif isfield(D, 'day_setup') && isfield(D.day_setup, 'retino_align')
+        V1_mask = logical(D.day_setup.retino_align.V1_mask_stim);
+    end
+    if ~isempty(expected_size) && ~isempty(V1_mask) && ~isequal(size(V1_mask), expected_size)
+        warning('V1_mask size mismatch — overlay skipped.');
+        V1_mask = [];
+    end
+catch ME
+    warning('Could not load V1 boundary: %s', ME.message);
+end
 end
 
 function cmap = bwr_colormap(n)

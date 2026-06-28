@@ -1,5 +1,5 @@
-%% current_thresholding_analysis_pixelwise_region_4.m
-% Step 4: Pixelwise dF/F(x,y,t) movie computation.
+%% current_thresholding_analysis_pixelwise_region_5A.m
+% Step 5_A: Pixelwise dF/F(x,y,t) movie computation (Method 0, per-trial baseline).
 %
 % For each channel-current stimulation condition this script:
 %   1. Computes dF/F(x,y,t) = [F(x,y,t) - F_baseline(x,y)] / F_baseline(x,y)
@@ -8,20 +8,22 @@
 %      (contains dff_movie H x W x T  and  t_s; use t_s < 0 for pre-stim frames)
 %   3. Averages across trials to produce    mean_dff_ch{N}_{I}uA.mat
 %      (same format: mean_dff_movie, t_s, final_mask)
-%   4. Saves a frame-grid figure of the mean dF/F at selected post-stim timepoints.
-%      (pre-stim dF/F is saved but not shown in the figure)
+%   4. Saves a frame-grid figure of the mean dF/F over a user-specified
+%      display window (default -0.2 to 1.2 s). All frames are always saved.
 %
-% All outputs for a given channel-current condition (trial movies, mean
-% movie, frame-grid figure, and any exported videos) are written into
-% their own subfolder  save_dir/ch{N}_{I}uA/  to keep results organized.
+% All outputs for a given channel-current condition are written into their
+% own subfolder  save_dir/ch{N}_{I}uA/.
+%
+% Conditions are listed sorted by channel number then current level
+% (same order as step 7_C / 7_D batch runners).
 %
 % Requires:
 %   - Day pointer .mat  (from make_container_ripple_3.m)
 %   - brain_mask.mat    (from draw_brain_mask_0.m)
+% Optional:
+%   - day_setup .mat with V1 boundary (from step 6) for figure overlay
 %
-% display_step_s controls the figure grid spacing only; all frames are always
-% saved in the .mat files. At 10 Hz with display_step_s = 0.3, the figure
-% shows frames at t = 0, 0.3, 0.6, ... s post-stim.
+% display_step_s controls figure grid spacing only; all frames always saved.
 
 close all; clc; clear; fclose('all');
 
@@ -36,10 +38,6 @@ if isequal(save_dir, 0), error('No output folder selected.'); end
 % Spacing between displayed frames in the frame-grid figure (seconds).
 % Does NOT affect what is saved — all frames are always saved.
 display_step_s = 0.1;
-
-% Number of pre-stimulus frames to show in the figure (shown at -display_step_s
-% intervals before t = 0, e.g. 3 gives t = -0.9, -0.6, -0.3 s).
-n_prestim_display = 9;
 
 % Color limits for the dF/F figures.
 % use_auto_clim = true  : symmetric scale set from the 1st/99th percentile
@@ -103,6 +101,24 @@ final_mask = logical(M.reference_mask_struct.final_mask);
 fprintf('Brain mask loaded: %d x %d  |  %d brain pixels\n', H, W, sum(final_mask(:)));
 
 %% -------------------------
+% OPTIONAL: V1 BOUNDARY OVERLAY
+% -------------------------
+v1_outline_color = [0.10 0.85 0.30];   % green V1 contour
+[v1_fn, v1_fp] = uigetfile('*.mat', ...
+    'Optional: select day_setup with V1 boundary from step 6 (Cancel = none)');
+if isequal(v1_fn, 0)
+    V1_mask = [];
+    fprintf('No V1 boundary overlay selected.\n');
+else
+    V1_mask = load_v1_mask(fullfile(v1_fp, v1_fn), [H W]);
+    if ~isempty(V1_mask)
+        fprintf('V1 boundary loaded: %s\n', v1_fn);
+    else
+        fprintf('V1 boundary not found or size mismatch — overlay skipped.\n');
+    end
+end
+
+%% -------------------------
 % RESOLVE IMAGE DIRECTORY
 % img_dir_rel stores the absolute path when data and analysis are on
 % separate drives; resolve_file_path uses it directly in that case.
@@ -150,6 +166,21 @@ fprintf('Camera rate: %.2f Hz  |  Pre: %.1f s  |  Post: %.1f s  |  %d frames/tri
     Fs, pre_sec, post_sec, T);
 
 %% -------------------------
+% DISPLAY TIME WINDOW (interactive)
+% Controls which frames appear in the frame-grid figure.
+% All frames are always saved regardless of this setting.
+% -------------------------
+win_ans = inputdlg( ...
+    {sprintf('Frame-grid start time (s)  [recording covers %.1f to +%.1f s]:', -pre_sec, post_sec), ...
+     'Frame-grid end   time (s):'}, ...
+    'Frame-grid display window', [1 60], {'-0.2', '1.2'});
+if isempty(win_ans), error('Display window not specified. Cancelled.'); end
+display_tmin = str2double(win_ans{1});
+display_tmax = str2double(win_ans{2});
+assert(isfinite(display_tmin) && isfinite(display_tmax) && display_tmin < display_tmax, ...
+    'display_tmin must be less than display_tmax.');
+
+%% -------------------------
 % UNPACK TRIAL INFORMATION
 % -------------------------
 [frame_idx, channels, currents, trial_index] = unpack_day_pointer_entries(day_pointer.entries);
@@ -172,22 +203,24 @@ fprintf('Output directory:\n  %s\n', save_dir);
 
 %% -------------------------
 % FRAME DISPLAY SELECTION
-% Pre-stim:  t = -n_prestim_display*display_step_s ... -display_step_s
-% Post-stim: t = 0, display_step_s, ... post_sec
+% Frames at display_tmin : display_step_s : display_tmax are shown in the
+% frame-grid figure. Nearest available frame used for each target time.
 % -------------------------
-prestim_display_t = -display_step_s * (n_prestim_display : -1 : 1);  % e.g. [-0.9 -0.6 -0.3]
-poststim_display_t = 0 : display_step_s : post_sec;
-display_t_all = [prestim_display_t, poststim_display_t];
+display_t_all = display_tmin : display_step_s : display_tmax;
 
 display_frame_idx = zeros(size(display_t_all));
 for di = 1:numel(display_t_all)
     [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
 end
+% Remove duplicates caused by coarser camera rate than display_step_s
+display_frame_idx = unique(display_frame_idx, 'stable');
+display_t_all     = t_s(display_frame_idx);
 
 %% -------------------------
 % MAIN LOOP — one pass per (channel, current) condition
+% Conditions sorted by channel number then current level (same order as 7_C/7_D).
 % -------------------------
-unique_pairs = unique([channels, currents], 'rows', 'stable');
+unique_pairs = unique([channels, currents], 'rows');   % sorted: channel first, then current
 
 %% -------------------------
 % INTERACTIVE CONDITION SELECTION
@@ -340,7 +373,8 @@ if make_trial_videos
 
             write_dff_video(video_fpath, Strial.dff_movie, t_s, final_mask, ...
                 sprintf('Ch %d | %g uA | %s', ch, cur, trial_label), ...
-                data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality);
+                data_clim(Strial.dff_movie, final_mask), cmap, video_frame_rate_fps, video_quality, ...
+                V1_mask, v1_outline_color);
 
             fprintf('  Saved trial video: %s.mp4\n', trial_base);
         end
@@ -382,6 +416,9 @@ for r = 1:numel(results)
         clim(ax, cond_clim);
         hold(ax, 'on');
         visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
+        if ~isempty(V1_mask)
+            visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0);
+        end
         title(ax, sprintf('t = %.1f s', t_label), 'FontSize', 8);
         last_ax = ax;
     end
@@ -402,7 +439,7 @@ for r = 1:numel(results)
         mean_video_fname = sprintf('mean_dff_ch%d_%guA.mp4', ch, cur);
         write_dff_video(fullfile(results(r).cond_dir, mean_video_fname), Mv, results(r).t_s, final_mask, ...
             sprintf('Ch %d | %g uA | mean (n=%d)', ch, cur, results(r).n_trials), ...
-            cond_clim, cmap, video_frame_rate_fps, video_quality);
+            cond_clim, cmap, video_frame_rate_fps, video_quality, V1_mask, v1_outline_color);
         fprintf('Saved mean video: %s\n', mean_video_fname);
     end
 
@@ -466,15 +503,11 @@ if ~(hi > lo), cl = [-0.02 0.02]; else, cl = [lo hi]; end
 end
 
 function write_dff_video(video_file, movie_stack, time_axis_sec, final_mask, ...
-    title_prefix, clim_range, cmap, frame_rate, quality)
-% Writes an MP4 of a dF/F(x,y,t) movie with the brain-mask boundary overlaid.
-% Pixels outside final_mask are rendered as one solid color (mask_color)
-% rather than their raw dF/F values — those are noisy/near-zero-baseline
-% outside the brain and otherwise flicker frame-to-frame ("snowflakes").
-% title_prefix is shown alongside each frame's time, e.g.
-%   'Ch 16 | 7 uA | trial 12'  or  'Ch 16 | 7 uA | mean (n=28)'
+    title_prefix, clim_range, cmap, frame_rate, quality, V1_mask, v1_color)
+if nargin < 10, V1_mask  = []; end
+if nargin < 11, v1_color = [0.10 0.85 0.30]; end
 
-mask_color = [0.15 0.15 0.15];  % solid color for pixels outside the brain mask
+mask_color = [0.15 0.15 0.15];
 
 [~, ~, n_frames] = size(movie_stack);
 fig = figure('Color', 'w', 'Visible', 'off', 'Position', [80 80 700 650]);
@@ -490,6 +523,9 @@ axis(ax, 'image'); axis(ax, 'off');
 set(ax, 'YDir', 'normal');
 hold(ax, 'on');
 visboundaries(ax, final_mask, 'Color', [0.4 0.4 0.4], 'LineWidth', 0.8);
+if ~isempty(V1_mask)
+    visboundaries(ax, V1_mask, 'Color', v1_color, 'LineWidth', 1.0);
+end
 
 title_handle = title(ax, '', 'Interpreter', 'none');
 colormap(ax, cmap);
@@ -573,6 +609,24 @@ for i = 1:numel(entries)
     else
         trial_index = [trial_index; nan(n_i, 1)]; %#ok<AGROW>
     end
+end
+end
+
+function V1_mask = load_v1_mask(fpath, expected_size)
+V1_mask = [];
+try
+    D = load(fpath);
+    if isfield(D, 'retino_align') && isfield(D.retino_align, 'V1_mask_stim')
+        V1_mask = logical(D.retino_align.V1_mask_stim);
+    elseif isfield(D, 'day_setup') && isfield(D.day_setup, 'retino_align')
+        V1_mask = logical(D.day_setup.retino_align.V1_mask_stim);
+    end
+    if ~isempty(expected_size) && ~isempty(V1_mask) && ~isequal(size(V1_mask), expected_size)
+        warning('V1_mask size does not match brain mask — overlay skipped.');
+        V1_mask = [];
+    end
+catch ME
+    warning('Could not load V1 boundary: %s', ME.message);
 end
 end
 

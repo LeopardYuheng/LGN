@@ -269,5 +269,197 @@ add_bullets(s4, 6.95, 3.85, 5.8, 2.4, [
 ])
 
 # ==============================================================
+# SLIDE 5 — Step 5_B: Drift-corrected dF/F
+# ==============================================================
+s5 = prs.slides.add_slide(BLANK)
+add_title(s5, "Step 5_B — Drift-Corrected dF/F (Method 1)",
+          "Step 4 linear model gives each trial its own time-varying baseline  ·  "
+          "F_baseline(x,y) = intercept(x,y) + slope(x,y) · t_session")
+
+# ---------------------------------------------------------------
+# LEFT PANEL: session-timeline diagram  (x 0.25 – 7.75")
+# ---------------------------------------------------------------
+# Diagram coordinate helpers
+DX0 = 0.55   # x of y-axis (left edge of plot area)
+DX1 = 7.55   # x of right edge of plot area
+DY0 = 1.55   # y of top  of plot area  (high F)
+DY1 = 6.40   # y of bottom of plot area (low F, i.e. session start)
+
+def lerp(a, b, t):
+    return a + t * (b - a)
+
+def drift_y(x_inch):
+    """y on the drift line for a given x (linear interpolation)."""
+    t = (x_inch - DX0) / (DX1 - DX0)
+    return lerp(DY1, DY0, t)   # F rises from left (low) to right (high)
+
+F_GLOBAL_Y = lerp(DY1, DY0, 0.5)   # constant F_global at session mid-point
+
+# Plot background
+bg = s5.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+    Inches(0.25), Inches(1.35), Inches(7.55), Inches(5.30))
+bg.fill.solid(); bg.fill.fore_color.rgb = RGBColor(0xF6, 0xF6, 0xF6)
+bg.line.color.rgb = RGBColor(0xCC, 0xCC, 0xCC); bg.line.width = Pt(0.75)
+
+# X-axis
+xax = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+    Inches(DX0), Inches(DY1 + 0.10), Inches(DX1), Inches(DY1 + 0.10))
+xax.line.color.rgb = DARK; xax.line.width = Pt(1.2)
+# Arrow head on x-axis
+from pptx.oxml.ns import qn as _qn
+_ln = xax.line._get_or_add_ln()
+_ln.append(_ln.makeelement(_qn('a:tailEnd'), {'type': 'none'}))
+_ln.append(_ln.makeelement(_qn('a:headEnd'), {'type': 'arrow', 'w': 'sm', 'len': 'sm'}))
+
+# X-axis label
+tb = s5.shapes.add_textbox(Inches(3.0), Inches(DY1 + 0.15), Inches(3.5), Inches(0.35))
+p = tb.text_frame.paragraphs[0]
+p.text = "Session time  →"; p.font.size = Pt(11); p.font.color.rgb = DARK
+p.alignment = PP_ALIGN.CENTER
+
+# Y-axis
+yax = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+    Inches(DX0), Inches(DY0), Inches(DX0), Inches(DY1 + 0.10))
+yax.line.color.rgb = DARK; yax.line.width = Pt(1.2)
+
+# Y-axis label
+tb2 = s5.shapes.add_textbox(Inches(0.25), Inches(3.2), Inches(0.55), Inches(1.8))
+tb2.text_frame.word_wrap = True
+p2 = tb2.text_frame.paragraphs[0]
+p2.text = "Raw F  ↑"; p2.font.size = Pt(10); p2.font.color.rgb = DARK
+
+# ── Old constant F_global (blue dashed) ──
+fg_ln = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+    Inches(DX0), Inches(F_GLOBAL_Y), Inches(DX1), Inches(F_GLOBAL_Y))
+fg_ln.line.color.rgb = BLUE; fg_ln.line.width = Pt(2.0)
+_fln = fg_ln.line._get_or_add_ln()
+_fln.append(_fln.makeelement(_qn('a:prstDash'), {'val': 'dash'}))
+
+tb_fg = s5.shapes.add_textbox(Inches(5.5), Inches(F_GLOBAL_Y - 0.35), Inches(2.2), Inches(0.35))
+p_fg = tb_fg.text_frame.paragraphs[0]
+p_fg.text = "old: constant F_global"; p_fg.font.size = Pt(9.5)
+p_fg.font.italic = True; p_fg.font.color.rgb = BLUE
+
+# ── New drift line (orange solid, going bottom-left → top-right) ──
+dr_ln = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+    Inches(DX0), Inches(DY1), Inches(DX1), Inches(DY0))
+dr_ln.line.color.rgb = ORANGE; dr_ln.line.width = Pt(2.5)
+
+tb_dr = s5.shapes.add_textbox(Inches(3.7), Inches(DY0 - 0.05), Inches(3.8), Inches(0.40))
+p_dr = tb_dr.text_frame.paragraphs[0]
+p_dr.text = "new: F_baseline(t) = intercept + slope · t"
+p_dr.font.size = Pt(10); p_dr.font.bold = True; p_dr.font.color.rgb = ORANGE
+
+# ── Three trial markers ──
+TRIAL_XS     = [1.10,   3.85,   6.80  ]
+TRIAL_LABELS = ["Trial 1\n(early)", "Trial k\n(mid)", "Trial N\n(late)"]
+TRIAL_COLORS = [RGBColor(0x1F, 0x7A, 0x1F),   # green  – early, low F_baseline
+                RGBColor(0xAA, 0x66, 0x00),   # amber  – middle
+                RGBColor(0xC0, 0x00, 0x00)]   # red    – late,  high F_baseline
+FB_LABELS    = ["F_b(t₁)", "F_b(t_k)", "F_b(t_N)"]
+
+for i, (tx, lbl, col, fbl) in enumerate(zip(TRIAL_XS, TRIAL_LABELS, TRIAL_COLORS, FB_LABELS)):
+    ty = drift_y(tx)          # y of this trial's baseline on the drift line
+    xax_y = DY1 + 0.10        # y of x-axis
+
+    # Vertical dashed drop-line from x-axis up to the drift point
+    vl = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+        Inches(tx), Inches(xax_y), Inches(tx), Inches(ty))
+    vl.line.color.rgb = col; vl.line.width = Pt(1.0)
+    _vln = vl.line._get_or_add_ln()
+    _vln.append(_vln.makeelement(_qn('a:prstDash'), {'val': 'sysDash'}))
+
+    # Horizontal reference line from y-axis to the drift point
+    hl = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+        Inches(DX0), Inches(ty), Inches(tx), Inches(ty))
+    hl.line.color.rgb = col; hl.line.width = Pt(0.75)
+    _hln = hl.line._get_or_add_ln()
+    _hln.append(_hln.makeelement(_qn('a:prstDash'), {'val': 'sysDash'}))
+
+    # Filled circle on drift line
+    DOT = 0.14
+    dot = s5.shapes.add_shape(MSO_SHAPE.OVAL,
+        Inches(tx - DOT/2), Inches(ty - DOT/2), Inches(DOT), Inches(DOT))
+    dot.fill.solid(); dot.fill.fore_color.rgb = col; dot.line.fill.background()
+
+    # F_baseline label on the left (y-axis)
+    tb_b = s5.shapes.add_textbox(Inches(0.27), Inches(ty - 0.17), Inches(0.70), Inches(0.30))
+    p_b  = tb_b.text_frame.paragraphs[0]
+    p_b.text = fbl; p_b.font.size = Pt(8.5); p_b.font.color.rgb = col; p_b.font.bold = True
+    p_b.alignment = PP_ALIGN.RIGHT
+
+    # Trial label below x-axis
+    tb_t = s5.shapes.add_textbox(Inches(tx - 0.55), Inches(xax_y + 0.05), Inches(1.1), Inches(0.45))
+    p_t  = tb_t.text_frame.paragraphs[0]
+    p_t.text = lbl; p_t.font.size = Pt(8.5); p_t.font.color.rgb = col
+    p_t.alignment = PP_ALIGN.CENTER
+
+    # Bias arrow: gap between F_global (blue dash) and per-trial F_baseline
+    if i != 1:   # skip the mid trial (gap ≈ 0)
+        gap_x   = tx + 0.28
+        y_top   = min(ty, F_GLOBAL_Y) + 0.05
+        y_bot   = max(ty, F_GLOBAL_Y) - 0.05
+        if y_bot - y_top > 0.15:
+            ga = s5.shapes.add_connector(MSO_CONNECTOR.STRAIGHT,
+                Inches(gap_x), Inches(y_top), Inches(gap_x), Inches(y_bot))
+            ga.line.color.rgb = RGBColor(0x80, 0x00, 0x80); ga.line.width = Pt(1.5)
+            _galn = ga.line._get_or_add_ln()
+            _galn.append(_galn.makeelement(_qn('a:headEnd'), {'type': 'arrow', 'w': 'sm', 'len': 'sm'}))
+            _galn.append(_galn.makeelement(_qn('a:tailEnd'), {'type': 'arrow', 'w': 'sm', 'len': 'sm'}))
+            gap_lbl = "over-corrects" if i == 0 else "under-corrects"
+            tb_gap = s5.shapes.add_textbox(Inches(gap_x + 0.05), Inches((y_top + y_bot)/2 - 0.15),
+                                           Inches(1.3), Inches(0.35))
+            p_gap  = tb_gap.text_frame.paragraphs[0]
+            p_gap.text = gap_lbl; p_gap.font.size = Pt(8.5)
+            p_gap.font.color.rgb = RGBColor(0x80, 0x00, 0x80); p_gap.font.italic = True
+
+# ── Legend note ──
+add_box(s5, 0.35, 6.68, 7.35, 0.60,
+        "Using constant F_global: baseline is wrong for early AND late trials — a systematic bias in dF/F\n"
+        "Using drift-corrected F_baseline(t): each trial's normalisation tracks the actual fluorescence level at that moment",
+        LIGHT_GRY, GRAY, 9.5)
+
+# ---------------------------------------------------------------
+# RIGHT PANEL: per-trial math  (x 8.0 – 13.1")
+# ---------------------------------------------------------------
+# Step 4 input
+add_box(s5, 8.0, 1.35, 5.1, 0.75,
+        "Step 4 output  (baseline_drift_4.mat)",
+        LIGHT_BLUE, BLUE, 12, bold=True)
+add_box(s5, 8.0, 2.15, 5.1, 0.85,
+        "slope_map(x,y)      [ΔF / second]\nintercept_map(x,y)  [F at t = 0 s]",
+        WHITE, BLUE, 11)
+
+add_arrow(s5, 10.55, 3.05, 10.55, 3.30)
+
+# Per-trial baseline computation
+add_box(s5, 8.0, 3.30, 5.1, 0.45,
+        "For each trial  (onset frame → session clock time)",
+        LIGHT_ORG, ORANGE, 11, bold=True)
+add_box(s5, 8.0, 3.80, 5.1, 0.55,
+        "t_session = (onset_frame − 1) / Fs",
+        WHITE, ORANGE, 11.5)
+
+add_arrow(s5, 10.55, 4.40, 10.55, 4.65)
+
+add_box(s5, 8.0, 4.65, 5.1, 0.70,
+        "F_baseline(x,y)  =  intercept_map  +  slope_map × t_session",
+        LIGHT_ORG, ORANGE, 11.5, bold=True)
+
+add_arrow(s5, 10.55, 5.40, 10.55, 5.65)
+
+# dF/F formula
+add_box(s5, 8.0, 5.65, 5.1, 0.95,
+        "dF/F(x,y,t)  =\n"
+        "[ F(x,y,t) − F_baseline(x,y) ] / F_baseline(x,y)",
+        RGBColor(0xFF, 0xF2, 0xCC), RGBColor(0xBF, 0x8F, 0x00), 12, bold=True)
+
+# Key insight
+add_box(s5, 8.0, 6.68, 5.1, 0.60,
+        "Each trial is normalised by the expected fluorescence at its own\n"
+        "point in session time — drift is removed before computing dF/F.",
+        LIGHT_GRN, GREEN, 9.5)
+
+# ==============================================================
 prs.save("LGN_pipeline_overview.pptx")
 print("Saved LGN_pipeline_overview.pptx")

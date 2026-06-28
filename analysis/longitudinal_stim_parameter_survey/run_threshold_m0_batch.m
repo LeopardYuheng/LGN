@@ -1,30 +1,36 @@
-function run_threshold_m0_batch(movie_file, save_dir, n_std_list, export_video)
-% run_threshold_m0_batch  Headless batch version of dff_pixelwise_significance_threshold_9A.
+function run_threshold_m0_batch(movie_file, save_dir, n_std_list, export_video, ...
+    v1_source_file, display_tmin, display_tmax)
+% run_threshold_m0_batch  Headless batch version of step 7_A.
 %
-% Threshold is derived from each movie's own pre-stim baseline (t_s < 0) --
-% no external baseline file is required.  All file dialogs, the n_std
-% inputdlg, and the interactive pixel-picker are removed.
+% Threshold is derived from each movie's own pre-stim baseline (t_s < 0).
+% All file dialogs and the interactive pixel-picker are removed.
 %
 % Usage:
 %   run_threshold_m0_batch(movie_file, save_dir, n_std_list)
-%   run_threshold_m0_batch(movie_file, save_dir, n_std_list, export_video)
+%   run_threshold_m0_batch(..., export_video)
+%   run_threshold_m0_batch(..., export_video, v1_source_file)
+%   run_threshold_m0_batch(..., export_video, v1_source_file, display_tmin, display_tmax)
 %
 % Arguments:
-%   movie_file   path to dF/F movie .mat  (from step 5_A or its V1 counterpart)
-%   save_dir     output folder (created if absent)
-%   n_std_list   row vector of threshold multipliers, e.g. [1 2 3]
-%   export_video logical, default false
+%   movie_file      path to dF/F movie .mat (from step 5_A)
+%   save_dir        output folder (created if absent)
+%   n_std_list      row vector of threshold multipliers, e.g. [1 2 3]
+%   export_video    logical, default false
+%   v1_source_file  optional path to day_setup .mat with V1 boundary; '' = none
+%   display_tmin    frame-grid start time (s), default -0.2
+%   display_tmax    frame-grid end   time (s), default  1.2
 
-if nargin < 4
-    export_video = false;
-end
+if nargin < 4, export_video    = false; end
+if nargin < 5, v1_source_file  = '';    end
+if nargin < 6, display_tmin    = -0.2;  end
+if nargin < 7, display_tmax    =  1.2;  end
 
 video_frame_rate_fps = 10;
 video_quality        = 95;
 display_step_s       = 0.1;
-n_prestim_display    = 9;
 mask_color_outside   = [0.15 0.15 0.15];
 mask_color_inactive  = [0.55 0.55 0.55];
+v1_outline_color     = [0.10 0.85 0.30];
 sigma_char           = char(963);
 
 %% -------------------------
@@ -58,6 +64,15 @@ end
 fprintf('Condition: %s   (%d x %d x %d frames)\n', cond_label, H, W, T);
 
 %% -------------------------
+% OPTIONAL V1 OVERLAY
+% -------------------------
+V1_mask = [];
+if ~isempty(v1_source_file) && isfile(v1_source_file)
+    V1_mask = load_v1_mask(v1_source_file, [H W]);
+    if ~isempty(V1_mask), fprintf('V1 boundary loaded.\n'); end
+end
+
+%% -------------------------
 % PER-PIXEL BASELINE STD (computed once, reused for every n_std)
 % -------------------------
 baseline_idx = t_s < 0;
@@ -83,17 +98,12 @@ else
 end
 cmap = bwr_colormap();
 
-pre_sec  = -t_s(1);
-post_sec = t_s(end);
-
-prestim_display_t  = -display_step_s * (n_prestim_display : -1 : 1);
-poststim_display_t = 0 : display_step_s : post_sec;
-display_t_all      = [prestim_display_t, poststim_display_t];
-
+display_t_all = display_tmin : display_step_s : display_tmax;
 display_frame_idx = zeros(size(display_t_all));
 for di = 1:numel(display_t_all)
     [~, display_frame_idx(di)] = min(abs(t_s - display_t_all(di)));
 end
+display_frame_idx = unique(display_frame_idx, 'stable');
 
 n_display = numel(display_frame_idx);
 n_cols    = min(7, n_display);
@@ -156,6 +166,9 @@ for ni = 1:numel(n_std_list)
         set(ax, 'YDir', 'normal');
         hold(ax, 'on');
         visboundaries(ax, ~always_nan_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.6);
+        if ~isempty(V1_mask) && isequal(size(V1_mask), [H W])
+            visboundaries(ax, V1_mask, 'Color', v1_outline_color, 'LineWidth', 1.0);
+        end
         title(ax, sprintf('t = %+.1f s', t_s(fi)), 'FontSize', 8);
         last_ax = ax;
     end
@@ -253,6 +266,24 @@ end
 
 close(writer);
 close(fig);
+end
+
+function V1_mask = load_v1_mask(fpath, expected_size)
+V1_mask = [];
+try
+    D = load(fpath);
+    if isfield(D, 'retino_align') && isfield(D.retino_align, 'V1_mask_stim')
+        V1_mask = logical(D.retino_align.V1_mask_stim);
+    elseif isfield(D, 'day_setup') && isfield(D.day_setup, 'retino_align')
+        V1_mask = logical(D.day_setup.retino_align.V1_mask_stim);
+    end
+    if ~isempty(expected_size) && ~isempty(V1_mask) && ~isequal(size(V1_mask), expected_size)
+        warning('V1_mask size mismatch — overlay skipped.');
+        V1_mask = [];
+    end
+catch ME
+    warning('Could not load V1 boundary: %s', ME.message);
+end
 end
 
 function cmap = bwr_colormap(n)
