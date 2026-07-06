@@ -1,3 +1,6 @@
+
+
+
 %% WF + Ripple LGN stim survey + PulsePal camera start
 % - Trial structure fully in this script (generates CSV)
 % - Reads CSV back in to determine total number of trials

@@ -88,6 +88,85 @@ Run in numbered order:
 2. [align_wf_with_nev_extracted_2.m](analysis/longitudinal_stim_parameter_survey/align_wf_with_nev_extracted_2.m)
 3. [make_container_ripple_3.m](analysis/longitudinal_stim_parameter_survey/make_container_ripple_3.m)
 
+### TIFF–SMA1 Frame Alignment Check
+
+Run **both** scripts below for every session, in the order shown. See
+[README_brief.md](README_brief.md) for where they fit in the overall pipeline.
+
+#### Why this is needed
+
+The pipeline assumes TIFF file #j corresponds 1-to-1 with SMA1 camera trigger
+#j. This breaks silently in two ways:
+
+- **Dropped TIFFs** — camera fired, SMA1 recorded it, but the frame was never
+  written to disk. All subsequent TIFF indices shift by 1, so every trial after
+  the drop loads the wrong frame.
+- **SMA1 channel dropout** — camera fired and saved the TIFF, but the Ripple
+  SMA1 channel missed the TTL pulse. The TIFF has no trigger record, shifting
+  alignment in the opposite direction.
+
+Neither failure produces any error in the old pipeline; both cause silent timing
+errors in trial analysis.
+
+#### Optional diagnostic: diagnose_late_segment_matching.m *(run first)*
+
+[Diagnose&fix_code/diagnose_late_segment_matching.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/diagnose_late_segment_matching.m)
+
+Reads every TIFF header (pixel data not loaded) and all SMA1 trigger times,
+then produces two diagnostic figures saved to SAVE_DIR:
+
+- **`delta_t_diagnostic.png`** — `delta_t(i) = tiff_t(i) − sma1_t(i)` plotted
+  by frame index. A flat line means no misalignment. Each dropped TIFF causes a
+  +0.1 s upward step; SMA1 channel dropouts cause downward steps.
+- **`dt_comparison.png`** — inter-frame intervals `diff(sma1_t)` and
+  `diff(tiff_t)` on the same axes. Identifies which signal contains the anomaly:
+  a spike only in `dt_tiff` = dropped TIFF; only in `dt_sma1` = SMA1 gap.
+
+Also saves `late_segment_timestamps.mat` with the raw timestamp arrays and a
+list of unmatched SMA1 triggers for further inspection.
+
+#### TIFF-check: build_tiff_sma1_correction_map.m *(after Step 1)*
+
+[Diagnose&fix_code/build_tiff_sma1_correction_map.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/build_tiff_sma1_correction_map.m)
+
+Reads `ripple_timing.mat` (Step 1) and all TIFF embedded timestamps, then
+builds a frame-level correction map using a **three-way zipper algorithm**:
+
+| signed_dist = tiff_t_adj − sma1_t | Action | Meaning |
+|---|---|---|
+| within ±MATCH_TOL_S (0.05 s) | match: both pointers advance | normal frame |
+| TIFF ahead of SMA1 | SMA1 pointer advances (NaN) | dropped TIFF |
+| SMA1 ahead of TIFF | TIFF pointer advances (orphaned) | SMA1 gap |
+
+TIFF timestamp discontinuities (camera clock resets) are pre-scanned and
+re-anchored automatically. Handles both N_TIFF < N_SMA1 and N_TIFF > N_SMA1
+(camera running past end of recording).
+
+**Conservation identity:** matched pairs M, dropped TIFFs D, orphaned TIFFs O
+satisfy M + D = N\_SMA1 and M + O = N\_TIFF, so D − O = N\_SMA1 − N\_TIFF.
+
+Saves `tiff_correction.mat` containing:
+- `sma1_to_tiff` — [1 × N\_SMA1] mapping from SMA1 trigger index to TIFF file
+  position (NaN = no saved frame for that trigger)
+- `dropped_sma1_idx` — indices of NaN entries
+- `N_SMA1`, `N_TIFF`, `FIRST_LATE_TIFF`, `session_offset_s`
+
+#### TIFF-fix: apply_tiff_correction_to_day_pointer.m *(after Step 3)*
+
+[Diagnose&fix_code/apply_tiff_correction_to_day_pointer.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/apply_tiff_correction_to_day_pointer.m)
+
+Applies `tiff_correction.mat` to the day pointer produced by Step 3. For each
+trial in each condition:
+
+1. Checks whether any frame in the analysis window `[onset − pre, onset + post]`
+   is a dropped frame (NaN in `sma1_to_tiff`). If so, the trial is excluded.
+2. Converts `trial_onset_frame_idx` from SMA1 trigger index to the corrected
+   TIFF file position via `sma1_to_tiff`.
+
+Saves `<original_name>_tiff_corrected.mat` alongside the original. **In Steps
+5_A and 5_B, select this corrected file when prompted for the day pointer.** No
+other changes to those scripts are required.
+
 ### Step 4: Pixelwise fluorescence drift analysis
 
 Run [baseline_drift_analysis_4.m](analysis/longitudinal_stim_parameter_survey/baseline_drift_analysis_4.m).

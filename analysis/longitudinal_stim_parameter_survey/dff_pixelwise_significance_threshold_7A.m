@@ -106,7 +106,7 @@ end
 % -------------------------
 win_ans = inputdlg( ...
     {'Frame-grid start time (s):', 'Frame-grid end   time (s):'}, ...
-    'Frame-grid display window', [1 50], {'-0.2', '1.2'});
+    'Frame-grid display window', [1 50], {'-0.1', '0.7'});
 if isempty(win_ans), error('Display window not specified. Cancelled.'); end
 display_tmin = str2double(win_ans{1});
 display_tmax = str2double(win_ans{2});
@@ -139,7 +139,8 @@ fprintf('Threshold: |dF/F| > %g * std\n', n_std);
 % -------------------------
 last_condition = struct('movie', [], 'sig_mask', [], 'always_nan_mask', [], ...
     't_s', [], 'sig_threshold', [], 'cond_label', '', 'cond_save_dir', '');
-cmap = bwr_colormap();
+cmap = jet(256);
+skip_all_videos = false;
 
 for ci = 1:n_sel
     mv_fpath   = fullfile(mat_files(ci).folder, mat_files(ci).name);
@@ -186,13 +187,7 @@ for ci = 1:n_sel
     fprintf('  Saved: %s\n', thresh_fname);
 
     % Color limits
-    finite_vals = movie(isfinite(movie));
-    if ~isempty(finite_vals)
-        q = quantile(finite_vals, [0.01 0.99]);
-        clim_to_use = [-max(abs(q)) max(abs(q))];
-    else
-        clim_to_use = [-0.02 0.02];
-    end
+    clim_to_use = [-0.05 0.05];
 
     % Frame-grid display indices
     display_t_all = display_tmin : display_step_s : display_tmax;
@@ -202,8 +197,8 @@ for ci = 1:n_sel
     end
     display_frame_idx = unique(display_frame_idx, 'stable');
     n_display = numel(display_frame_idx);
-    n_cols    = min(7, n_display);
-    n_rows    = ceil(n_display / n_cols);
+    n_cols    = 3;
+    n_rows    = 3;
 
     % Frame-grid figure
     fig = figure('Color', 'w', 'Visible', 'off', ...
@@ -237,9 +232,16 @@ for ci = 1:n_sel
     fprintf('  Saved: %s\n', frame_grid_fname);
 
     % Optional video
-    export_choice = questdlg( ...
-        sprintf('Export thresholded video for "%s"?', cond_label), ...
-        'Export video?', 'Export', 'Skip', 'Skip');
+    if ~skip_all_videos
+        export_choice = questdlg( ...
+            sprintf('Export thresholded video for "%s"?', cond_label), ...
+            'Export video?', 'Export', 'Skip', 'Skip All', 'Skip');
+        if strcmp(export_choice, 'Skip All')
+            skip_all_videos = true;
+        end
+    else
+        export_choice = 'Skip';
+    end
     if strcmp(export_choice, 'Export')
         video_fpath = fullfile(cond_save_dir, sprintf('thresh_%s.mp4', out_tag));
         write_thresh_video(video_fpath, movie, sig_mask, always_nan_mask, t_s, cond_label, ...

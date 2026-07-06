@@ -66,7 +66,21 @@ completeFilePath = fullfile(nev_path, nev_name);
 
 fprintf('Selected file:\n  %s\n', completeFilePath);
 
-[ns_status, hFile] = ns_OpenFile(completeFilePath);
+% Copy the .nev into an isolated temp folder so that ns_OpenFile does not
+% auto-discover and index the companion .ns5/.ns6 continuous-data files
+% (which can be tens of GB).  Step 1 only needs Event + Segment data, both
+% of which live exclusively in the .nev.  The original file is never
+% modified; only a temporary copy is opened.
+tmp_nev_dir  = fullfile(tempdir, ['nev_step1_' datestr(now, 'yyyymmdd_HHMMSSFFF')]);
+mkdir(tmp_nev_dir);
+tmp_nev_path = fullfile(tmp_nev_dir, nev_name);
+fprintf('Copying .nev to isolated temp folder (skips .ns5 indexing)...\n');
+t_copy = tic;
+copyfile(completeFilePath, tmp_nev_path);
+fprintf('  copy done in %.1f s\n', toc(t_copy));
+cleanup_nev_tmp = onCleanup(@() rmdir_safe(tmp_nev_dir));
+
+[ns_status, hFile] = ns_OpenFile(tmp_nev_path);
 
 % Status checker (your Neuroshare returns 'ns_OK')
 is_ok = @(r) (isnumeric(r) && all(r(:)==0)) || ...
@@ -441,6 +455,15 @@ if ~isempty(frame_times_s)
 
     saveas(fig_end, fullfile(saveDir, ...
         sprintf('%s_%s_sma_alignment_endzoom.png', mouse_id, date_str)));
+end
+
+function rmdir_safe(d)
+% Removes the isolated temp folder. Only ever touches files inside the
+% freshly-created temp folder -- never the original .nev/.nsX files.
+try
+    if exist(d, 'dir'), rmdir(d, 's'); end
+catch
+end
 end
 
 function [event_time_s, event_value, rising_times_s] = local_read_event_stream(hFile, targetReason, highVal)

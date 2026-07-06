@@ -1,0 +1,28 @@
+机制解析：单向拉链的反向失效
+
+匹配算法是一个单向拉链，有且仅有一种推进规则：
+
+
+匹配成功 → j++, k_tiff++
+匹配失败 → j++, k_tiff 不动（认为这是一次丢帧）
+这个设计只能处理TIFF 落后于 SMA1的情况：SMA1 跑太快，下一张 TIFF 要等 j 多前进一步才能配上。
+
+当 dt_sma1 突然变大时（SMA1 跳跃向前），发生的是反向情况：
+
+位置	sma1_t	tiff_t + offset	距离	结果
+j（跳变前）	t₀	t₀	~0	匹配，k_tiff++
+j+1（跳变后）	t₀ + 0.4s	t₀ + 0.1s	0.3s	超阈值，j++，k_tiff 不动
+j+2	t₀ + 0.5s	t₀ + 0.1s（k_tiff 卡住了）	0.4s	超阈值，j++
+j+3	t₀ + 0.6s	还是 t₀ + 0.1s	0.5s	超阈值，j++
+...	每步 +0.1s	永远不变	越来越大	永远失配
+k_tiff 永远卡在跳变点前一帧，所有后续 SMA1 触发都拿同一张 TIFF 来比较，距离单调递增，再也无法恢复。
+
+现有代码对 TIFF 时间戳跳变做了预扫描+重锚定，但对 SMA1 侧跳变完全没有对称处理。修复方法完全对称： 预扫描 diff(sma1_t_late) 找到 SMA1 侧的大跳变，在跳变处把 k_tiff 快进到对应位置再重锚定。现在更新 build_tiff_sma1_correction_map.m：
+
+Edit c:\Projects\LGN\data analysis pipeline\analysis\longitudinal_stim_parameter_survey\Diagnose&fix_code\build_tiff_sma1_correction_map.m
+Added 37 lines
+修复后的逻辑现在是完全对称的双向拉链：
+
+
+TIFF 时间戳跳变 → k_tiff 侧重锚定（原有）
+SMA1 通道断落 → k_tiff 快进越过孤儿帧，再重锚定（新增）

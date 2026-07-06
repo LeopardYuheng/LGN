@@ -5,22 +5,25 @@ branches into **three parallel analysis tracks**. Run whichever tracks you
 need — they are independent of each other once Step 5 outputs exist.
 
 ```
-Pre-B  →  1  →  2  →  3  →  4  →  6 (V1 boundary, optional overlay)
-                                  │
-               ┌──────────────────┼──────────────────────┐
-               │                  │                       │
-           TRACK A             TRACK B                TRACK C
-      Local baseline       Global baseline          Consistency
-     dF/F analysis        dF/F analysis            analysis
-       (Method 0)           (Method 1)           (Method 1)
-               │                  │                       │
-             5_A                5_B                     5_B
-               │                  │                       │
-             7_A                7_B               7_C / 7_D
-                                                      │
-                                               7_C2 (optional)
-                                               7_E  (optional)
+Pre-B  →  1  →  TIFF-check*  →  2  →  3  →  TIFF-fix*  →  4  →  6 (V1, optional)
+                                                    │
+               ┌────────────────────────────────────┼──────────────────────┐
+               │                                    │                       │
+           TRACK A                             TRACK B                TRACK C
+      Local baseline                       Global baseline          Consistency
+     dF/F analysis                        dF/F analysis            analysis
+       (Method 0)                           (Method 1)           (Method 1)
+               │                                    │                       │
+             5_A                                  5_B                     5_B
+               │                                    │                       │
+             7_A                                  7_B               7_C / 7_D
+                                                                        │
+                                                                 7_C2 (optional)
+                                                                 7_E  (optional)
 ```
+
+**\* TIFF-check / TIFF-fix** are required for every session — see
+[TIFF–SMA1 Frame Alignment Check](#tiff-sma1-frame-alignment-check-required) below.
 
 Keep data in its final location before starting — later scripts reload
 saved paths and will break if files move.
@@ -47,6 +50,19 @@ pixels for every downstream step.
 
 [extract_nev_stim_and_camera_1.m](analysis/longitudinal_stim_parameter_survey/extract_nev_stim_and_camera_1.m)
 
+### TIFF-check — Build TIFF–SMA1 correction map *(required, after Step 1)*
+
+[Diagnose&fix_code/build_tiff_sma1_correction_map.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/build_tiff_sma1_correction_map.m)
+
+Cross-references embedded TIFF timestamps against SMA1 trigger times to detect
+dropped frames and SMA1 channel dropouts. Produces `tiff_correction.mat`.
+Run this for every session — even with no mismatches it serves as a QC check.
+See [README_detailed.md](README_detailed.md#tiffsma1-frame-alignment-check) for the algorithm and failure modes.
+
+*Optional diagnostic:* [diagnose_late_segment_matching.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/diagnose_late_segment_matching.m)
+plots `delta_t` and inter-frame intervals to visualise any misalignment before
+running the correction.
+
 ### Step 2 — Align widefield frames to stim timing *(required)*
 
 [align_wf_with_nev_extracted_2.m](analysis/longitudinal_stim_parameter_survey/align_wf_with_nev_extracted_2.m)
@@ -56,6 +72,15 @@ pixels for every downstream step.
 [make_container_ripple_3.m](analysis/longitudinal_stim_parameter_survey/make_container_ripple_3.m)
 
 Produces the day pointer that all downstream steps load.
+
+### TIFF-fix — Apply correction to day pointer *(required, after Step 3)*
+
+[Diagnose&fix_code/apply_tiff_correction_to_day_pointer.m](analysis/longitudinal_stim_parameter_survey/Diagnose&fix_code/apply_tiff_correction_to_day_pointer.m)
+
+Applies `tiff_correction.mat` to the Step 3 day pointer. Converts onset indices
+to corrected TIFF positions and excludes any trial whose window contains a
+dropped frame. Saves `<name>_tiff_corrected.mat` — **use this file in Steps
+5_A and 5_B instead of the original day pointer.**
 
 ### Step 4 — Baseline drift analysis *(required for Track B/C; recommended QC for Track A)*
 
@@ -214,24 +239,27 @@ Defaults: `n_std = 1`, `min_duration_s = 0.3 s`, `min_trials_sustained = 15`,
 ## Quick Checklist
 
 ```
-COMMON
-  Pre-B  draw_brain_mask_0              (required)
-  1      extract_nev_stim_and_camera    (required)
-  2      align_wf_with_nev_extracted    (required)
-  3      make_container_ripple          (required)
-  4      baseline_drift_analysis        (required for B/C; QC for A)
-  6      retino_alignment_with_brain_mask  (optional V1 overlay for all tracks)
+COMMON (required for every session)
+  Pre-B       draw_brain_mask_0
+  1           extract_nev_stim_and_camera
+  TIFF-check  build_tiff_sma1_correction_map     ← after Step 1
+              [optional: diagnose_late_segment_matching  (visual QC)]
+  2           align_wf_with_nev_extracted
+  3           make_container_ripple
+  TIFF-fix    apply_tiff_correction_to_day_pointer  ← after Step 3
+  4           baseline_drift_analysis              (required for B/C; QC for A)
+  6           retino_alignment_with_brain_mask     (optional V1 overlay)
 
 TRACK A — Local baseline (Method 0)
-  5_A    current_thresholding_analysis_pixelwise_region_5A
+  5_A    current_thresholding_analysis_pixelwise_region_5A  [use tiff_corrected day pointer]
   7_A    dff_pixelwise_significance_threshold_7A  (or run_7A_batch.py)
 
 TRACK B — Global baseline (Method 1, single movie)
-  5_B    compute_dff_method1_5B         (shared with Track C)
+  5_B    compute_dff_method1_5B         [use tiff_corrected day pointer] (shared with Track C)
   7_B    threshold_dff_method1_7B
 
 TRACK C — Consistency (Method 1, cross-trial)
-  5_B    compute_dff_method1_5B         (shared with Track B)
+  5_B    compute_dff_method1_5B         [use tiff_corrected day pointer] (shared with Track B)
   7_C    consensus_region_method1_7C    (or run_7C_batch.py)
   7_D    consensus_region_window_method1_7D  (or run_7D_batch.py)  [recommended]
   7_C2   consensus_7C2 / run_7C2_batch      [optional post-filter]
