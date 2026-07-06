@@ -214,8 +214,8 @@ for ci = 1:n_sel
     end
     display_frame_idx = unique(display_frame_idx, 'stable');
     n_display = numel(display_frame_idx);
-    n_cols    = 3;
-    n_rows    = 3;
+    n_cols    = ceil(sqrt(n_display));
+    n_rows    = ceil(n_display / n_cols);
 
     % Frame-grid figure
     fig = figure('Color', 'w', 'Visible', 'off', ...
