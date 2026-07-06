@@ -203,8 +203,8 @@ for ci = 1:n_sel
         'always_nan_mask', 't_s', '-v7.3');
     fprintf('  Saved: %s\n', thresh_fname);
 
-    % Color limits
-    clim_to_use = [-0.05 0.05];
+    % Color limits — autoscale to this condition's in-mask dF/F range (same as step 5_A)
+    clim_to_use = data_clim(movie, ~always_nan_mask);
 
     % Frame-grid display indices
     display_t_all = display_tmin : display_step_s : display_tmax;
@@ -214,7 +214,7 @@ for ci = 1:n_sel
     end
     display_frame_idx = unique(display_frame_idx, 'stable');
     n_display = numel(display_frame_idx);
-    n_cols    = ceil(sqrt(n_display));
+    n_cols    = min(7, n_display);
     n_rows    = ceil(n_display / n_cols);
 
     % Frame-grid figure
@@ -556,4 +556,22 @@ r    = [linspace(0, 1, half)';  ones(rest, 1)         ];
 g    = [linspace(0, 1, half)';  linspace(1, 0, rest)' ];
 b    = [ones(half, 1);          linspace(1, 0, rest)'  ];
 cmap = [r, g, b];
+end
+
+function cl = data_clim(M, mask)
+% Autoscale color limits to the min/max of in-mask, finite dF/F values across
+% the whole movie, so the colorbar spans the real data range with no clipping.
+% Same convention as step 5_A/5_B.
+if nargin >= 2 && ~isempty(mask)
+    T = size(M, 3);
+    v = M(repmat(logical(mask), [1 1 T]) & isfinite(M));
+else
+    v = M(isfinite(M));
+end
+if isempty(v)
+    cl = [-0.02 0.02];
+    return;
+end
+lo = min(v); hi = max(v);
+if ~(hi > lo), cl = [-0.02 0.02]; else, cl = [lo hi]; end
 end
