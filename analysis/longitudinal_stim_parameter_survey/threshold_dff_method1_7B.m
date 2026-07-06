@@ -148,7 +148,13 @@ end
 % MAIN LOOP — one pass per selected condition
 % -------------------------
 cmap = jet(256);
-skip_all_videos = false;
+
+video_mode = questdlg( ...
+    'Export thresholded videos for the selected condition(s)?', ...
+    'Video export', 'Export All', 'Ask Each Condition', 'Skip All', 'Ask Each Condition');
+if isempty(video_mode), video_mode = 'Ask Each Condition'; end
+export_all_videos = strcmp(video_mode, 'Export All');
+skip_all_videos   = strcmp(video_mode, 'Skip All');
 
 last_c = struct('movie', [], 'sig_mask', [], 'always_nan_mask', [], ...
     't_s', [], 'baseline_dff', [], 'sig_threshold', [], ...
@@ -253,7 +259,9 @@ for ci = 1:n_sel
     fprintf('  Saved: %s\n', frame_grid_fname);
 
     % Optional video
-    if ~skip_all_videos
+    if export_all_videos
+        export_choice = 'Export';
+    elseif ~skip_all_videos
         export_choice = questdlg( ...
             sprintf('Export thresholded video for "%s" (M1)?', cond_label), ...
             'Export video?', 'Export', 'Skip', 'Skip All', 'Skip');
