@@ -13,6 +13,11 @@
 % Optional V1 boundary overlay (from step 6 day_setup) is drawn as a green
 % contour on all figures.  Display time window is user-specified (default
 % -0.2 to 1.2 s); all frames are always saved regardless.
+%
+% n_std may be set to 0, which disables thresholding entirely: every
+% in-mask pixel is shown at its true dF/F value in the figures/video (no
+% suprathreshold/inactive distinction), i.e. step 7_A degenerates into a
+% plain figure/movie plotter for the step-5_A dF/F movie.
 
 close all; clc; clear; fclose('all');
 
@@ -120,19 +125,27 @@ sigma_char    = char(963);
 default_n_std = 3;
 answer = inputdlg(...
     sprintf(['|dF/F| > n_std %s pixel baseline std\n\n' ...
+             '  n_std = 0 -> no threshold (plots raw dF/F)\n' ...
              '  n_std = 1 -> ~32%% baseline crossing chance\n' ...
              '  n_std = 2 -> ~5%%\n' ...
              '  n_std = 3 -> ~0.3%%\n\nEnter n_std:'], sigma_char), ...
     'Step 7_A: significance threshold multiplier', [1 60], {num2str(default_n_std)});
 if isempty(answer), error('No threshold multiplier entered.'); end
 n_std = str2double(answer{1});
-assert(isfinite(n_std) && n_std > 0, 'n_std must be a positive number.');
-if n_std == round(n_std)
+assert(isfinite(n_std) && n_std >= 0, 'n_std must be a non-negative number.');
+no_threshold = (n_std == 0);
+if no_threshold
+    n_std_label = 'raw';
+elseif n_std == round(n_std)
     n_std_label = sprintf('%d%s', n_std, sigma_char);
 else
     n_std_label = sprintf('%g%s', n_std, sigma_char);
 end
-fprintf('Threshold: |dF/F| > %g * std\n', n_std);
+if no_threshold
+    fprintf('No threshold (n_std = 0): plotting raw dF/F.\n');
+else
+    fprintf('Threshold: |dF/F| > %g * std\n', n_std);
+end
 
 %% -------------------------
 % MAIN LOOP — one pass per selected condition
@@ -172,7 +185,11 @@ for ci = 1:n_sel
     always_nan_mask = all(isnan(movie), 3);
     pixel_std       = std(movie(:,:,baseline_idx), 0, 3, 'omitnan');
     sig_threshold   = n_std * pixel_std;
-    sig_mask        = abs(movie) > sig_threshold;
+    if no_threshold
+        sig_mask = repmat(~always_nan_mask, 1, 1, T);
+    else
+        sig_mask = abs(movie) > sig_threshold;
+    end
     thresh_movie    = movie;
     thresh_movie(~sig_mask) = NaN;
 
@@ -223,8 +240,13 @@ for ci = 1:n_sel
     if ~isempty(last_ax)
         colormap(last_ax, cmap); clim(last_ax, clim_to_use); colorbar(last_ax);
     end
-    title(tl, sprintf('Thresholded dF/F (|dF/F| > %g%s)  |  %s', ...
-        n_std, sigma_char, cond_label), 'Interpreter', 'none', 'FontSize', 11);
+    if no_threshold
+        title(tl, sprintf('Raw dF/F (no threshold)  |  %s', cond_label), ...
+            'Interpreter', 'none', 'FontSize', 11);
+    else
+        title(tl, sprintf('Thresholded dF/F (|dF/F| > %g%s)  |  %s', ...
+            n_std, sigma_char, cond_label), 'Interpreter', 'none', 'FontSize', 11);
+    end
 
     frame_grid_fname = sprintf('thresh_%s_frame_grid.png', out_tag);
     exportgraphics(fig, fullfile(cond_save_dir, frame_grid_fname), 'Resolution', 150);
@@ -495,22 +517,28 @@ fig = figure('Color', 'w', 'Position', [120 120 640 420]);
 ax  = axes(fig);
 hold(ax, 'on');
 
-h_band = patch(ax, [t_s(1) t_s(end) t_s(end) t_s(1)], [-px_thresh -px_thresh px_thresh px_thresh], ...
-    [0.85 0.85 0.85], 'FaceAlpha', 0.45, 'EdgeColor', 'none');
 xline(ax, 0, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1);
-
 h_trace = plot(ax, t_s, trace, '-', 'Color', [0.10 0.30 0.80], 'LineWidth', 1.3);
-
-supra = abs(trace) > px_thresh;
-h_supra = plot(ax, t_s(supra), trace(supra), 'o', 'MarkerSize', 4, ...
-    'MarkerFaceColor', [0.85 0.20 0.10], 'MarkerEdgeColor', 'none');
 
 xlabel(ax, 'Time relative to stimulation onset (s)');
 ylabel(ax, '\DeltaF/F');
 title(ax, sprintf('dF/F(t) for pixel (%d,%d) for %s', row, col, cond_label), 'Interpreter', 'none');
-legend(ax, [h_band, h_trace, h_supra], ...
-    {sprintf('baseline \\pm%g%s = \\pm%.4f', n_std, sigma_char, px_thresh), 'dF/F(t)', 'suprathreshold'}, ...
-    'Location', 'best', 'Box', 'off');
+
+if n_std > 0
+    h_band = patch(ax, [t_s(1) t_s(end) t_s(end) t_s(1)], [-px_thresh -px_thresh px_thresh px_thresh], ...
+        [0.85 0.85 0.85], 'FaceAlpha', 0.45, 'EdgeColor', 'none');
+    uistack(h_band, 'bottom');
+
+    supra = abs(trace) > px_thresh;
+    h_supra = plot(ax, t_s(supra), trace(supra), 'o', 'MarkerSize', 4, ...
+        'MarkerFaceColor', [0.85 0.20 0.10], 'MarkerEdgeColor', 'none');
+
+    legend(ax, [h_band, h_trace, h_supra], ...
+        {sprintf('baseline \\pm%g%s = \\pm%.4f', n_std, sigma_char, px_thresh), 'dF/F(t)', 'suprathreshold'}, ...
+        'Location', 'best', 'Box', 'off');
+else
+    legend(ax, h_trace, {'dF/F(t) (no threshold)'}, 'Location', 'best', 'Box', 'off');
+end
 grid(ax, 'on'); box(ax, 'on');
 
 fig_fname = sprintf('dff_t_pixel_r%d_c%d_%s.png', row, col, cond_label);
