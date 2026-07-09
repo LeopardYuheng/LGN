@@ -25,6 +25,11 @@ Pre-B  →  1  →  TIFF-check*  →  2  →  3  →  TIFF-fix*  →  4  →  6 
 **\* TIFF-check / TIFF-fix** are required for every session — see
 [TIFF–SMA1 Frame Alignment Check](#tiff-sma1-frame-alignment-check-required) below.
 
+**Step 8** is optional and not shown above — it works directly off Step 5_A
+or 5_B output, letting you pick either Method and compare one pixel's
+dF/F(t) across every current level of a chosen channel. See
+[Step 8](#step-8--pixel-dfft-comparison-across-currents-optional) below.
+
 Keep data in its final location before starting — later scripts reload
 saved paths and will break if files move.
 
@@ -236,6 +241,21 @@ Defaults: `n_std = 1`, `min_duration_s = 0.3 s`, `min_trials_sustained = 15`,
 
 ---
 
+## Step 8 — Pixel dF/F(t) Comparison Across Currents (optional)
+
+[pixel_temporal_comparison_8.m](analysis/longitudinal_stim_parameter_survey/pixel_temporal_comparison_8.m)
+
+Works directly off the **mean dF/F movies from step 5_A or 5_B** (not step
+7's thresholded output). Choose Method 0 or Method 1, then pick one channel —
+every current level available for that channel is auto-loaded. Click pixel(s)
+on a reference dF/F map (autoscaled, optional V1 overlay, time slider) and
+get one figure per picked pixel with `dF/F(t)` overlaid for every current of
+that channel (one color per current in ascending order, e.g. 0 µA green, 2 µA
+red, 3 µA blue, ... 7 µA). Saves the figure plus the raw per-current traces
+as a `.mat`.
+
+---
+
 ## Quick Checklist
 
 ```
@@ -264,6 +284,9 @@ TRACK C — Consistency (Method 1, cross-trial)
   7_D    consensus_region_window_method1_7D  (or run_7D_batch.py)  [recommended]
   7_C2   consensus_7C2 / run_7C2_batch      [optional post-filter]
   7_E    consensus_7E  / run_7E_batch        [optional]
+
+STEP 8 — cross-current pixel comparison (optional, reads Track A or B step 5 output)
+  8      pixel_temporal_comparison_8   [choose Method 0 (5_A) or Method 1 (5_B) source]
 ```
 
 Legacy scripts (steps 5_B1, 7-relink, 8_A, 8_B1, 8_B2) are in

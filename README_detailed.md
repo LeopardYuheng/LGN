@@ -416,6 +416,16 @@ the per-pixel threshold from the movie's own pre-stimulation frames (`t_s < 0`)
 and flags `|dF/F(x,y,t)| > n_std · σ_pre(x,y)`. Produces the same output
 types as 7_B plus an interactive time-slider viewer.
 
+### Step 8 — Pixel dF/F(t) comparison across currents *(optional)*
+
+[pixel_temporal_comparison_8.m](analysis/longitudinal_stim_parameter_survey/pixel_temporal_comparison_8.m)
+
+Reads directly from step 5_A or 5_B (not from step 7's thresholded output).
+Choose Method 0 or Method 1, then one channel — every current level saved
+for that channel is auto-loaded. Click pixel(s) on a reference dF/F map
+(autoscaled, optional V1 overlay, time slider), and get one figure per
+picked pixel with `dF/F(t)` overlaid for every current of that channel.
+
 ---
 
 ## What Each Step Is Doing
@@ -649,6 +659,35 @@ A generic single-movie utility for Method 0 dF/F movies from step 5_A:
 - Saves thresholded movie + per-pixel std map as `.mat`, frame-grid figure,
   optional MP4, and interactive time-slider viewer with pixel picking
 - Optional V1 boundary overlay
+
+### Step 8 — Pixel dF/F(t) comparison across currents, cross-track (optional)
+
+[pixel_temporal_comparison_8.m](analysis/longitudinal_stim_parameter_survey/pixel_temporal_comparison_8.m)
+
+Answers "how does the response at this one pixel change with stimulation
+current?" for a single channel, using the trial-averaged movies already
+produced by step 5_A or 5_B — no step 7 thresholding involved.
+
+- Prompts for Method 0 (`mean_dff_ch{N}_{I}uA.mat`, step 5_A) or Method 1
+  (`mean_dff_m1_ch{N}_{I}uA.mat`, step 5_B), then a folder to scan
+- Lists the channels found and lets you pick **one**; every current level
+  saved for that channel is loaded automatically (no need to select
+  currents individually)
+- Validates that all loaded movies share the same frame size before
+  allowing pixel comparison
+- Builds a reference map from the highest-current condition's most active
+  post-stim frame (autoscaled color limits, same `data_clim` convention as
+  5_A/5_B/7_A/7_B), with an optional V1 boundary overlay from step 6
+- Interactive time-slider viewer lets you scrub the reference movie, then
+  click pixel(s) to pick them (left-click add, right-click/`u` undo,
+  Enter/Escape finish) — same interaction pattern as the 7_A/7_B
+  pixel-picking viewers
+- For each picked pixel, saves one figure with `dF/F(t)` overlaid for every
+  current level of the channel, one line color per current in ascending
+  order (fixed 10-color qualitative palette, e.g. 0 µA green, 2 µA red,
+  3 µA blue, ... 7 µA), plus a `.mat` with the raw per-current traces and
+  their own `t_s` vectors
+- Outputs go to `save_dir/ch{N}_temporal/`
 
 ---
 
