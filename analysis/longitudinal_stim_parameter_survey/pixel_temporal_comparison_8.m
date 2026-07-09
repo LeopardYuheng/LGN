@@ -152,8 +152,12 @@ if isempty(post_idx), post_idx = 1:numel(ref_t); end
 mean_abs_post = squeeze(mean(mean(abs(ref_movie(:,:,post_idx)), 1, 'omitnan'), 2, 'omitnan'));
 [~, pk_loc]   = max(mean_abs_post);
 peak_frame_idx = post_idx(pk_loc);
+peak_img       = ref_movie(:,:,peak_frame_idx);
 
-clim_bg = data_clim(ref_movie, ~ref_always_nan_mask);
+clim_bg  = data_clim(ref_movie, ~ref_always_nan_mask);
+ref_cmap = jet(256);
+ref_title = sprintf('Reference map  |  Ch %d  |  %g uA  |  t = %+.2f s', ...
+    sel_channel, curs(ref_i), ref_t(peak_frame_idx));
 fprintf('\nReference map: Ch %d | %g uA | peak frame t = %+.2f s\n', ...
     sel_channel, curs(ref_i), ref_t(peak_frame_idx));
 
@@ -161,7 +165,7 @@ fprintf('\nReference map: Ch %d | %g uA | peak frame t = %+.2f s\n', ...
 % INTERACTIVE PIXEL PICKING (with time slider on the reference condition)
 % -------------------------
 picked = pick_pixels_on_reference(ref_movie, ref_always_nan_mask, ref_t, peak_frame_idx, ...
-    clim_bg, jet(256), mask_color_outside, V1_mask, v1_outline_color, ...
+    clim_bg, ref_cmap, mask_color_outside, V1_mask, v1_outline_color, ...
     sprintf('Ch %d  |  reference: %g uA', sel_channel, curs(ref_i)));
 
 if isempty(picked)
@@ -170,7 +174,9 @@ else
     fprintf('Generating dF/F(t) across-current comparison for %d picked pixel(s)...\n', size(picked,1));
     for pi = 1:size(picked, 1)
         row = picked(pi, 1); col = picked(pi, 2);
-        plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, ch_save_dir, is_m1);
+        plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, ch_save_dir, is_m1, ...
+            peak_img, ref_always_nan_mask, clim_bg, ref_cmap, mask_color_outside, ...
+            V1_mask, v1_outline_color, ref_title);
     end
 end
 
@@ -304,31 +310,53 @@ set(img, 'CData', dff_frame_to_rgb(movie(:,:,k), always_nan_mask, clim_range, cm
 set(th, 'String', sprintf('%s | t = %+.2f s', title_str, t_s(k)));
 end
 
-function plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, save_dir, is_m1)
-% Overlays dF/F(t) at (row, col) for every current level of the channel.
-fig = figure('Color', 'w', 'Position', [120 120 700 460]);
-ax  = axes(fig);
-hold(ax, 'on');
-xline(ax, 0, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1);
+function plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, save_dir, is_m1, ...
+    ref_img, ref_mask, ref_clim, ref_cmap, mask_color, V1_mask, v1_color, ref_title)
+% Two-panel figure: left = reference dF/F map with the picked pixel marked,
+% right = dF/F(t) at (row, col) overlaid for every current level.
+[H, W] = size(ref_img);
+method_tag = '';
+if is_m1, method_tag = ' (Method 1)'; end
+
+fig = figure('Color', 'w', 'Position', [60 80 1220 480]);
+
+% --- Left: reference map with the picked pixel marked ---
+ax1 = subplot(1, 2, 1);
+image(ax1, dff_frame_to_rgb(ref_img, ref_mask, ref_clim, ref_cmap, mask_color));
+axis(ax1, 'image'); axis(ax1, 'off'); set(ax1, 'YDir', 'normal'); hold(ax1, 'on');
+visboundaries(ax1, ~ref_mask, 'Color', [0.9 0.9 0.9], 'LineWidth', 0.8);
+if ~isempty(V1_mask) && isequal(size(V1_mask), [H W])
+    visboundaries(ax1, V1_mask, 'Color', v1_color, 'LineWidth', 1.0);
+end
+colormap(ax1, ref_cmap); clim(ax1, ref_clim); colorbar(ax1);
+plot(ax1, col, row, 'ko', 'MarkerSize', 16, 'LineWidth', 1.2);
+plot(ax1, col, row, 'w+', 'MarkerSize', 14, 'LineWidth', 2.0);
+title(ax1, ref_title, 'Interpreter', 'none', 'FontSize', 10);
+
+% --- Right: dF/F(t) overlaid across currents ---
+ax2 = subplot(1, 2, 2);
+hold(ax2, 'on');
+xline(ax2, 0, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1);
 
 n_cur   = numel(conditions);
 handles = gobjects(n_cur, 1);
 labels  = cell(n_cur, 1);
 for i = 1:n_cur
     trace = squeeze(conditions(i).movie(row, col, :));
-    handles(i) = plot(ax, conditions(i).t_s, trace, '-', ...
+    handles(i) = plot(ax2, conditions(i).t_s, trace, '-', ...
         'Color', cur_colors(i, :), 'LineWidth', 1.5);
     labels{i} = sprintf('%g uA', conditions(i).current_uA);
 end
 
-xlabel(ax, 'Time relative to stimulation onset (s)');
-ylabel(ax, '\DeltaF/F');
-method_tag = '';
-if is_m1, method_tag = ' (Method 1)'; end
-title(ax, sprintf('dF/F(t) for pixel (%d,%d)  |  Ch %d%s', row, col, sel_channel, method_tag), ...
+xlabel(ax2, 'Time relative to stimulation onset (s)');
+ylabel(ax2, '\DeltaF/F');
+title(ax2, sprintf('dF/F(t) for pixel (%d,%d)  |  Ch %d%s', row, col, sel_channel, method_tag), ...
     'Interpreter', 'none');
-legend(ax, handles, labels, 'Location', 'best', 'Box', 'off');
-grid(ax, 'on'); box(ax, 'on');
+legend(ax2, handles, labels, 'Location', 'best', 'Box', 'off');
+grid(ax2, 'on'); box(ax2, 'on');
+
+sgtitle(fig, sprintf('Ch %d  |  pixel (%d,%d)%s', sel_channel, row, col, method_tag), ...
+    'Interpreter', 'none');
 
 fname_tag = 'dff_t';
 if is_m1, fname_tag = [fname_tag '_m1']; end
