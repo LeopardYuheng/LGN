@@ -249,10 +249,11 @@ Works directly off the **mean dF/F movies from step 5_A or 5_B** (not step
 7's thresholded output). Choose Method 0 or Method 1, then pick one channel —
 every current level available for that channel is auto-loaded. Click pixel(s)
 on a reference dF/F map (autoscaled, optional V1 overlay, time slider) and
-get one figure per picked pixel with `dF/F(t)` overlaid for every current of
-that channel (one color per current in ascending order, e.g. 0 µA green, 2 µA
-red, 3 µA blue, ... 7 µA). Saves the figure plus the raw per-current traces
-as a `.mat`.
+get one two-panel figure per picked pixel: the reference dF/F map with that
+pixel marked (left) next to `dF/F(t)` overlaid for every current of that
+channel (right, one color per current in ascending order, e.g. 0 µA green,
+2 µA red, 3 µA blue, ... 7 µA). Saves the figure plus the raw per-current
+traces as a `.mat`.
 
 ---
 

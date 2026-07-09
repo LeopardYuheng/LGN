@@ -682,11 +682,12 @@ produced by step 5_A or 5_B — no step 7 thresholding involved.
   click pixel(s) to pick them (left-click add, right-click/`u` undo,
   Enter/Escape finish) — same interaction pattern as the 7_A/7_B
   pixel-picking viewers
-- For each picked pixel, saves one figure with `dF/F(t)` overlaid for every
-  current level of the channel, one line color per current in ascending
-  order (fixed 10-color qualitative palette, e.g. 0 µA green, 2 µA red,
-  3 µA blue, ... 7 µA), plus a `.mat` with the raw per-current traces and
-  their own `t_s` vectors
+- For each picked pixel, saves a two-panel figure: the reference dF/F map
+  with that pixel marked (left) alongside `dF/F(t)` overlaid for every
+  current level of the channel (right), one line color per current in
+  ascending order (fixed 10-color qualitative palette, e.g. 0 µA green,
+  2 µA red, 3 µA blue, ... 7 µA), plus a `.mat` with the raw per-current
+  traces and their own `t_s` vectors
 - Outputs go to `save_dir/ch{N}_temporal/`
 
 ---
