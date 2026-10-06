@@ -4,7 +4,9 @@
 % Scans a step-5_A output folder for mean_dff_ch*.mat files, lets the user
 % select which channel-current conditions to process (sorted by channel then
 % current), then for each selected condition:
-%   1. Computes per-pixel baseline std from pre-stim frames (t_s < 0).
+%   1. Uses a per-pixel baseline std pooled from ALL frames of every 0 uA
+%      trial movie found under the root folder (i.e. across the whole
+%      experiment), not just this condition's own pre-stim frames.
 %   2. Flags |dF/F(x,y,t)| > n_std * std(x,y) as suprathreshold.
 %   3. Saves the thresholded movie + frame-grid figure.
 %   4. If a single condition is selected: opens the interactive viewer and
@@ -57,6 +59,12 @@ curs = curs(valid);
 mat_files = mat_files(sord);
 chs       = chs(sord);
 curs      = curs(sord);
+
+% Keep the full (unfiltered) file list around — needed below to pool the
+% 0 uA baseline across the whole experiment, independent of which
+% conditions the user selects to threshold.
+all_mat_files = mat_files;
+all_curs      = curs;
 
 cond_strs = arrayfun(@(i) sprintf('Ch %d  |  %g uA', chs(i), curs(i)), ...
     (1:numel(mat_files))', 'UniformOutput', false);
@@ -148,6 +156,40 @@ else
 end
 
 %% -------------------------
+% PIXEL BASELINE STD POOLED FROM ALL 0 uA TRIALS ACROSS THE EXPERIMENT
+% -------------------------
+zero_idx   = abs(all_curs) < 1e-9;
+zero_files = all_mat_files(zero_idx);
+assert(~isempty(zero_files), ...
+    'No 0 uA trial files (mean_dff_ch*_0uA.mat) found under:\n  %s\nCannot compute baseline std.', root_dir);
+
+fprintf('\nPooling pixel baseline std from %d 0 uA trial file(s) across the experiment:\n', ...
+    numel(zero_files));
+zero_frames = cell(numel(zero_files), 1);
+Hb = []; Wb = [];
+for zi = 1:numel(zero_files)
+    zpath = fullfile(zero_files(zi).folder, zero_files(zi).name);
+    Sz = load(zpath);
+    if isfield(Sz, 'mean_dff_movie'),  zmv = Sz.mean_dff_movie;
+    elseif isfield(Sz, 'dff_movie'),   zmv = Sz.dff_movie;
+    else, error('File does not contain dff_movie or mean_dff_movie:\n  %s', zpath); end
+    if isempty(Hb)
+        [Hb, Wb, ~] = size(zmv);
+    else
+        assert(size(zmv,1) == Hb && size(zmv,2) == Wb, ...
+            'Frame size mismatch in 0 uA file (expected %d x %d):\n  %s', Hb, Wb, zpath);
+    end
+    zero_frames{zi} = zmv;
+    fprintf('  %s  (%d frames)\n', zero_files(zi).name, size(zmv, 3));
+end
+zero_stack         = cat(3, zero_frames{:});
+n_zero_frames       = size(zero_stack, 3);
+pixel_std_baseline = std(zero_stack, 0, 3, 'omitnan');
+fprintf('Baseline std pooled from %d total frames across %d 0 uA trial file(s).\n', ...
+    n_zero_frames, numel(zero_files));
+clear zero_frames zero_stack Sz zmv;
+
+%% -------------------------
 % MAIN LOOP — one pass per selected condition
 % -------------------------
 last_condition = struct('movie', [], 'sig_mask', [], 'always_nan_mask', [], ...
@@ -186,10 +228,12 @@ for ci = 1:n_sel
 
     out_tag = sprintf('%s_%s', base_name, n_std_label);
 
-    % Threshold
-    baseline_idx    = t_s < 0;
+    % Threshold — baseline std pooled from all 0 uA trials across the experiment
+    assert(isequal(size(movie,1), Hb) && isequal(size(movie,2), Wb), ...
+        'Frame size mismatch between condition movie and 0 uA baseline (expected %d x %d):\n  %s', ...
+        Hb, Wb, mv_fpath);
     always_nan_mask = all(isnan(movie), 3);
-    pixel_std       = std(movie(:,:,baseline_idx), 0, 3, 'omitnan');
+    pixel_std       = pixel_std_baseline;
     sig_threshold   = n_std * pixel_std;
     if no_threshold
         sig_mask = repmat(~always_nan_mask, 1, 1, T);
@@ -199,14 +243,14 @@ for ci = 1:n_sel
     thresh_movie    = movie;
     thresh_movie(~sig_mask) = NaN;
 
-    fprintf('  Baseline frames: %d  |  In-mask pixels: %d\n', ...
-        sum(baseline_idx), sum(~always_nan_mask(:)));
+    fprintf('  Baseline: %d frames pooled from %d 0uA file(s)  |  In-mask pixels: %d\n', ...
+        n_zero_frames, numel(zero_files), sum(~always_nan_mask(:)));
 
     % Save .mat
     thresh_fname = sprintf('thresh_%s.mat', out_tag);
     save(fullfile(cond_save_dir, thresh_fname), ...
         'thresh_movie', 'sig_mask', 'pixel_std', 'sig_threshold', 'n_std', ...
-        'always_nan_mask', 't_s', '-v7.3');
+        'always_nan_mask', 't_s', 'n_zero_frames', '-v7.3');
     fprintf('  Saved: %s\n', thresh_fname);
 
     % Color limits — autoscale to this condition's in-mask dF/F range (same as step 5_A)
@@ -220,7 +264,7 @@ for ci = 1:n_sel
     end
     display_frame_idx = unique(display_frame_idx, 'stable');
     n_display = numel(display_frame_idx);
-    n_cols    = min(7, n_display);
+    n_cols    = ceil(sqrt(n_display));   % as close to a square grid as possible
     n_rows    = ceil(n_display / n_cols);
 
     % Frame-grid figure

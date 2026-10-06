@@ -1,3 +1,9 @@
+
+
+
+
+
+
 %% draw_brain_mask_0.m
 % Draws the brain boundary mask from stimulation-day TIFF frames.
 %

@@ -12,6 +12,13 @@ Each cell is labelled with its current level.
 Recognises outputs from:
   Step 5A  : mean_dff_ch{N}_{I}uA_frame_grid.png
   Step 5B  : mean_dff_m1_ch{N}_{I}uA_frame_grid.png
+  Custom   : mean_dff_ch{N}_{I}uA_custom_frame_grid_{tmin}s_to_{tmax}s
+             [_clim_auto | _clim_{lo}_to_{hi}] [_visual_areas].png
+             (from plotting code/plot_dff_frame_grid_custom.m; the optional
+              tags record the color scale and whether step-6 visual-area
+              boundaries were overlaid. Each distinct combination of
+              window / color scale / overlay gets its own slide, so
+              variants of the same channel are never mixed together.)
   Step 7A  : thresh_*_frame_grid.png                    (Method-0 threshold)
   Step 7B  : thresh_*_m1_frame_grid.png                 (Method-1 threshold)
   Step 7C  : consensus_*_m1_frame_grid.png, consensus_*_m1_region.png
@@ -46,6 +53,7 @@ from pptx.enum.text import PP_ALIGN
 INCLUDE_RE = [
     re.compile(r'mean_dff_ch\d+_[\d.]+uA_frame_grid\.png$', re.I),       # step 5A
     re.compile(r'mean_dff_m1_ch\d+_[\d.]+uA_frame_grid\.png$', re.I),    # step 5B
+    re.compile(r'mean_dff_ch\d+_[\d.]+uA_custom_frame_grid_.*\.png$', re.I),  # plot_dff_frame_grid_custom.m
     re.compile(r'thresh_.*_frame_grid\.png$', re.I),
     re.compile(r'consensus_.*_frame_grid\.png$', re.I),
     re.compile(r'consensus_.*_region\.png$', re.I),
@@ -96,10 +104,54 @@ def extract_ch_cur(path):
 
 _C2_TAG_RE = re.compile(r'_c\d+_(frame_grid|region)\.png$', re.I)
 
+# Filenames written by plotting code/plot_dff_frame_grid_custom.m. The clim
+# and visual-area tags are optional so figures made before those options
+# existed still parse. Numeric values are written with %g and have their
+# decimal points replaced by 'p' (e.g. -0.02 -> -0p02), so they can contain
+# '-', '.', 'p' and 'e' but never an underscore.
+_CUSTOM_RE = re.compile(
+    r'custom_frame_grid'
+    r'_(?P<tmin>-?[\d.]+)s_to_(?P<tmax>-?[\d.]+)s'
+    r'(?:_clim_(?P<clim>auto|[^_]+_to_[^_]+))?'
+    r'(?P<areas>_visual_areas)?'
+    r'\.png$',
+    re.I,
+)
+
+
+def _fmt_clim_value(v):
+    """'-0p02' -> '-0.02' (the MATLAB writer swaps '.' for 'p')."""
+    return v.replace('p', '.')
+
+
+def _custom_variant_label(n):
+    """Describe one custom frame-grid variant: window, color scale, overlay."""
+    m = _CUSTOM_RE.search(n)
+    if not m:
+        return 'plot_dff_frame_grid_custom'
+
+    parts = [f"{m.group('tmin')}s to {m.group('tmax')}s"]
+
+    clim = m.group('clim')
+    if clim is None:
+        pass                                  # figure predates the clim option
+    elif clim.lower() == 'auto':
+        parts.append('auto scale')
+    else:
+        lo, _, hi = clim.partition('_to_')
+        parts.append(f'clim {_fmt_clim_value(lo)} to {_fmt_clim_value(hi)}')
+
+    if m.group('areas'):
+        parts.append('visual areas')
+
+    return ', '.join(parts)
+
 
 def _classify(fname):
     """Return (sort_order: int, label: str) for a PNG filename."""
     n = os.path.basename(fname).lower()
+    if 'custom_frame_grid' in n:
+        return (1.5, f'Custom frame-grid ({_custom_variant_label(n)})')
     if n.startswith('mean_dff_m1'):
         return (0, '5B – mean dF/F (Method 1)')
     if n.startswith('mean_dff'):
@@ -273,7 +325,9 @@ def main():
     prs.slide_height = Inches(_SLIDE_H)
 
     n_slides = 0
-    for (s_ord, s_lbl, ch) in sorted(groups, key=lambda k: (k[0], k[2])):
+    # Sort by step, then label (keeps the custom frame-grid variants in a
+    # stable, readable order), then channel.
+    for (s_ord, s_lbl, ch) in sorted(groups, key=lambda k: (k[0], k[1], k[2])):
         entries = groups[(s_ord, s_lbl, ch)]   # list of (current, png_path)
         slide_title = f'Channel {ch}  |  {s_lbl}'
         images_with_labels = [(f'{cur:g} µA', p) for cur, p in entries]

@@ -56,17 +56,17 @@ SCRIPT_DIR = r"C:\Projects\LGN\data analysis pipeline\analysis\longitudinal_stim
 # Condition folders, each holding per-trial Method 1 movies from step 5_B2:
 #   .../method1/ch{N}_{I}uA/dff_m1_ch{N}_{I}uA_trial{K}.mat
 # All channel-current condition subfolders under COND_ROOT are analysed.
-COND_ROOT = r"C:\Projects\LGN\result\LGN24_06172026\method1 prethreshold analysis\method1"
+COND_ROOT = r"C:\Projects\LGN\result\LGN26_06302026\step_5B_method1beforethreshold\method1"
 COND_DIRS = sorted(
     str(p) for p in Path(COND_ROOT).iterdir()
     if p.is_dir() and (list(p.glob("dff_m1_*_trial*.mat")) or list(p.glob("v1_dff_m1_*_trial*.mat")))
 )
 
 # Root output folder. Each condition gets its own subfolder inside this root.
-SAVE_DIR = r"C:\Projects\LGN\result\LGN24_06172026\step_7C_result"
+SAVE_DIR = r"C:\Projects\LGN\result\LGN26_06302026\step7C_trailconsistency"
 
 # Significance multipliers (threshold = n_std * each trial's pre-stim std).
-N_STD_LIST = [1]
+N_STD_LIST = [2]
 
 # Consensus counts: a pixel is consensus-active at time t if active in at
 # least this many trials. Default 25 (of e.g. 30). Each value produces its
@@ -76,7 +76,7 @@ MIN_TRIALS_LIST = [20]
 # V1 boundary overlay (always on). Point this at the day_setup .mat containing
 # retino_align.V1_mask_stim (from step 6). The whole-brain consensus result is
 # unchanged; the V1 boundary is only drawn on the figures/videos.
-V1_SOURCE_FILE = r"C:\Projects\LGN\result\LGN24_06172026\LGN24_20260617_day_setup.mat"
+V1_SOURCE_FILE = r"C:\Projects\LGN\result\LGN26_06302026\LGN26_20260630_day_setup.mat"
 
 # Set True to also export each consensus-count movie as an MP4 (slow).
 EXPORT_VIDEO = False

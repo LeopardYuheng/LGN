@@ -257,6 +257,22 @@ traces as a `.mat`.
 
 ---
 
+## Step 9 — Receptive Field Lookup for Clicked Pixels (optional)
+
+[receptive_field_lookup_9.m](analysis/longitudinal_stim_parameter_survey/receptive_field_lookup_9.m)
+
+A pure lookup, not a new computation: uses the `azi_stim` / `alt_stim` maps
+step 6 already aligned to stim space. Loads a **day_setup from step 6** plus
+**one dF/F `.mat` from step 5_A or 5_B** as a clickable reference map (same
+picking interaction as step 8). For each picked pixel `(row, col)`, reports
+`azi_stim(row,col)` / `alt_stim(row,col)` as that pixel's receptive field
+center (azimuth, altitude in deg) — population-level, since this is
+widefield imaging. Saves a 3-panel figure (dF/F map + azimuth map + altitude
+map, picked pixels numbered, V1 boundary overlaid) plus a `.csv`/`.mat` table
+of `row, col, azimuth_deg, altitude_deg, inside_V1`.
+
+---
+
 ## Quick Checklist
 
 ```
@@ -288,6 +304,9 @@ TRACK C — Consistency (Method 1, cross-trial)
 
 STEP 8 — cross-current pixel comparison (optional, reads Track A or B step 5 output)
   8      pixel_temporal_comparison_8   [choose Method 0 (5_A) or Method 1 (5_B) source]
+
+STEP 9 — receptive field lookup for clicked pixels (optional, needs step 6 + step 5 output)
+  9      receptive_field_lookup_9     [day_setup from step 6, one dF/F .mat from 5_A/5_B]
 ```
 
 Legacy scripts (steps 5_B1, 7-relink, 8_A, 8_B1, 8_B2) are in

@@ -22,6 +22,17 @@
 %     day_setup.retino_align.*          (computed here)
 %       .V1_mask_stim
 %       .azi_stim, .alt_stim, .VFS_stim
+%       .retOverlay_stim                 -- ALL visual-area boundaries (not
+%                                            just V1: LM, AL, PM, ... too),
+%                                            warped onto the stim/brain-mask
+%                                            pixel grid with nearest-neighbor
+%                                            interpolation (crisp lines, no
+%                                            resampling blur). Prefers
+%                                            VFS_boundaries; falls back to
+%                                            an edge-detection of
+%                                            VFS_processed if that field
+%                                            isn't available. No manual
+%                                            selection needed.
 %       .tform, .tform_type
 %       .stim_reference_image
 %       ... (see full list below)
@@ -34,7 +45,6 @@ close all; clc; clear; fclose('all');
 RUN_OPTION_A = true;   % manual cpselect affine (recommended)
 RUN_OPTION_B = false;  % auto affine + manual nudge
 
-USE_VFS_BOUNDARIES_IF_AVAILABLE = true;
 FORCE_REDRAW_V1 = false;  % set true to redraw V1 even if a saved mask exists
 
 %% -------------------------
@@ -128,22 +138,35 @@ if size(retRef,1) ~= retino_target_size(1) || size(retRef,2) ~= retino_target_si
 end
 retRefG = mat2gray(toGrayDouble(retRef));
 
-% VFS overlay from retino space
-retOverlay = [];
-if USE_VFS_BOUNDARIES_IF_AVAILABLE && isfield(R, 'VFS_boundaries') && ~isempty(R.VFS_boundaries)
-    retOverlay = R.VFS_boundaries;
-elseif isfield(R, 'VFS_processed') && ~isempty(R.VFS_processed)
-    retOverlay = R.VFS_processed;
-elseif isfield(S, 'VFS_processed') && ~isempty(S.VFS_processed)
-    retOverlay = S.VFS_processed;
+% Visual-area boundary overlay from retino space -- ALL areas (not just
+% V1). Prefer the dedicated boundary map; otherwise derive a 1px boundary
+% mask from the patch/sign map via edge detection. No manual selection.
+VFS_boundaries_native = [];
+if isfield(R, 'VFS_boundaries') && ~isempty(R.VFS_boundaries)
+    VFS_boundaries_native = R.VFS_boundaries;
 elseif isfield(S, 'VFS_boundaries') && ~isempty(S.VFS_boundaries)
-    retOverlay = S.VFS_boundaries;
+    VFS_boundaries_native = S.VFS_boundaries;
 end
 
-if ~isempty(retOverlay)
-    if size(retOverlay,1) ~= retino_target_size(1) || size(retOverlay,2) ~= retino_target_size(2)
-        retOverlay = imresize(retOverlay, retino_target_size, 'nearest');
+VFS_processed_native = [];
+if isfield(R, 'VFS_processed') && ~isempty(R.VFS_processed)
+    VFS_processed_native = R.VFS_processed;
+elseif isfield(S, 'VFS_processed') && ~isempty(S.VFS_processed)
+    VFS_processed_native = S.VFS_processed;
+end
+
+retOverlay = [];
+if ~isempty(VFS_boundaries_native)
+    if size(VFS_boundaries_native,1) ~= retino_target_size(1) || size(VFS_boundaries_native,2) ~= retino_target_size(2)
+        VFS_boundaries_native = imresize(VFS_boundaries_native, retino_target_size, 'nearest');
     end
+    retOverlay = VFS_boundaries_native > 0.5;
+elseif ~isempty(VFS_processed_native)
+    if size(VFS_processed_native,1) ~= retino_target_size(1) || size(VFS_processed_native,2) ~= retino_target_size(2)
+        VFS_processed_native = imresize(VFS_processed_native, retino_target_size, 'nearest');
+    end
+    retOverlay = patch_edges(VFS_processed_native);
+    fprintf('VFS_boundaries not available -- derived visual-area boundaries from VFS_processed instead.\n');
 end
 
 %% -------------------------
@@ -250,7 +273,8 @@ if RUN_OPTION_A
     retRef_warp = imwarp(retRefG, tformA, 'OutputView', Rfixed);
 
     if ~isempty(retOverlay)
-        retOverlay_warp = warpAnyImage(retOverlay, tformA, Rfixed);
+        retOverlay_warp = imwarp(double(retOverlay), tformA, ...
+            'OutputView', Rfixed, 'Interp', 'nearest') > 0.5;
     end
 
     V1_mask_stim = imwarp(V1_mask_retino, tformA, ...
@@ -276,7 +300,8 @@ if RUN_OPTION_B
     retRef_warp = imwarp(retRefG, tformB, 'OutputView', Rfixed);
 
     if ~isempty(retOverlay)
-        retOverlay_warp = warpAnyImage(retOverlay, tformB, Rfixed);
+        retOverlay_warp = imwarp(double(retOverlay), tformB, ...
+            'OutputView', Rfixed, 'Interp', 'nearest') > 0.5;
     end
 
     V1_mask_stim = imwarp(V1_mask_retino, tformB, ...
@@ -322,28 +347,65 @@ title('Stim-space: brain mask (green) + V1 (yellow)'); axis image;
 saveas(fig2, fullfile(analysis_folder, sprintf('%s_%s_V1_mask_stim_qc.png', subject_id, date_str)));
 
 if ~isempty(retOverlay_warp)
-    fig3 = figure('Name', 'Warped overlay on stim reference', 'Color', 'w');
-    imshow(stimRefG, []); hold on;
-    h_ov = imshow(makeOverlayForDisplay(retOverlay_warp));
-    set(h_ov, 'AlphaData', 0.45);
-    visboundaries(V1_mask_stim, 'Color', 'y', 'LineWidth', 1.5);
-    title('Warped retino overlay + V1 boundary');
-    saveas(fig3, fullfile(analysis_folder, sprintf('%s_%s_retino_overlay_stim_qc.png', subject_id, date_str)));
+    % ALL visual-area boundaries (LM, AL, PM, ... -- not just V1) painted
+    % directly on the stim reference image, same axis convention
+    % (axis image / axis off / YDir normal) as every dF/F figure in this
+    % pipeline (step 5_A, 7_A, 8, ...).
+    region_bound_color = [0.20 0.95 0.95];
+    v1_color           = [1.00 0.85 0.10];
+
+    rgb = repmat(stimRefG, 1, 1, 3);
+    bmask = imdilate(retOverlay_warp, strel('disk', 1));
+    for c = 1:3
+        chan = rgb(:, :, c);
+        chan(bmask) = region_bound_color(c);
+        rgb(:, :, c) = chan;
+    end
+
+    fig3 = figure('Name', 'Visual-area boundaries on stim reference', 'Color', 'w');
+    ax3 = axes(fig3);
+    image(ax3, rgb);
+    axis(ax3, 'image'); axis(ax3, 'off'); set(ax3, 'YDir', 'normal'); hold(ax3, 'on');
+    visboundaries(ax3, V1_mask_stim, 'Color', v1_color, 'LineWidth', 1.5);
+    title(ax3, 'All visual-area boundaries (cyan) + V1 (yellow) on stim reference');
+    exportgraphics(fig3, fullfile(analysis_folder, sprintf('%s_%s_retino_overlay_stim_qc.png', subject_id, date_str)), ...
+        'Resolution', 150);
+end
+
+% Dilated all-area boundary mask (for visibility) + its orange RGB/alpha
+% overlay, reused on both the azimuth and altitude figures below.
+region_overlay_rgb = [];
+region_overlay_alpha = [];
+if ~isempty(retOverlay_warp)
+    region_bound_disp = imdilate(retOverlay_warp, strel('disk', 1));
+    region_overlay_rgb = cat(3, ones(size(region_bound_disp)), ...
+        0.55*ones(size(region_bound_disp)), zeros(size(region_bound_disp)));
+    region_overlay_alpha = double(region_bound_disp);
 end
 
 if ~isempty(azi_stim)
     fig4 = figure('Name', 'Azimuth map', 'Color', 'w');
     imagesc(azi_stim); axis image; set(gca, 'YDir', 'normal');
     colormap(gca, parula); cb = colorbar; cb.Label.String = 'Azimuth (deg)';
-    hold on; visboundaries(V1_mask_stim, 'Color', 'w', 'LineWidth', 2);
-    title('Azimuth map with V1 overlay');
+    hold on;
+    if ~isempty(region_overlay_rgb)
+        h_bound = image(region_overlay_rgb);
+        set(h_bound, 'AlphaData', region_overlay_alpha);
+    end
+    visboundaries(V1_mask_stim, 'Color', 'w', 'LineWidth', 2);
+    title('Azimuth map with visual-area boundaries (orange, all areas) + V1 (white)');
     saveas(fig4, fullfile(analysis_folder, sprintf('%s_%s_azimuth_map.png', subject_id, date_str)));
 
     fig5 = figure('Name', 'Altitude map', 'Color', 'w');
     imagesc(alt_stim); axis image; set(gca, 'YDir', 'normal');
     colormap(gca, parula); cb = colorbar; cb.Label.String = 'Altitude (deg)';
-    hold on; visboundaries(V1_mask_stim, 'Color', 'w', 'LineWidth', 2);
-    title('Altitude map with V1 overlay');
+    hold on;
+    if ~isempty(region_overlay_rgb)
+        h_bound = image(region_overlay_rgb);
+        set(h_bound, 'AlphaData', region_overlay_alpha);
+    end
+    visboundaries(V1_mask_stim, 'Color', 'w', 'LineWidth', 2);
+    title('Altitude map with visual-area boundaries (orange, all areas) + V1 (white)');
     saveas(fig5, fullfile(analysis_folder, sprintf('%s_%s_altitude_map.png', subject_id, date_str)));
 
     fig6 = figure('Name', 'Visual Field Sign', 'Color', 'w');
@@ -401,17 +463,12 @@ else
 end
 end
 
-function warped = warpAnyImage(img, tform, Rfixed)
-if ndims(img) == 2
-    warped = imwarp(img, tform, 'OutputView', Rfixed);
-elseif ndims(img) == 3 && size(img,3) == 3
-    warped = zeros([Rfixed.ImageSize 3], 'like', img);
-    for c = 1:3
-        warped(:,:,c) = imwarp(img(:,:,c), tform, 'OutputView', Rfixed);
-    end
-else
-    warped = imwarp(img(:,:,1), tform, 'OutputView', Rfixed);
-end
+function bmask = patch_edges(labelMap)
+% 1-pixel-wide boundary mask between differently-valued regions of a
+% labeled/patch map (e.g. VFS_processed) -- used when a dedicated
+% VFS_boundaries field isn't available.
+se = ones(3);
+bmask = (labelMap ~= imdilate(labelMap, se)) | (labelMap ~= imerode(labelMap, se));
 end
 
 function ovDisp = makeOverlayForDisplay(ov)

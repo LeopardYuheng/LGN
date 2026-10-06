@@ -426,6 +426,20 @@ for that channel is auto-loaded. Click pixel(s) on a reference dF/F map
 (autoscaled, optional V1 overlay, time slider), and get one figure per
 picked pixel with `dF/F(t)` overlaid for every current of that channel.
 
+### Step 9 — Receptive field lookup for clicked pixels 
+
+[receptive_field_lookup_9.m](analysis/longitudinal_stim_parameter_survey/receptive_field_lookup_9.m)
+
+Requires the retinotopic alignment from step 6. Reads a single dF/F `.mat`
+from step 5_A or 5_B, click pixel(s) on the reference dF/F map (same
+autoscaled/V1-overlay/time-slider interaction as step 8), and for each picked
+pixel look up `azi_stim(row,col)` / `alt_stim(row,col)` from the step-6
+`day_setup` — the receptive field center (altitude, azimuth in deg) already
+assigned to that pixel by the retinotopic alignment. No new computation;
+pure lookup. Saves a 3-panel summary figure (dF/F map, azimuth map, altitude
+map, picked pixels numbered) plus a `.csv` and `.mat` table of pixel
+row/col, azimuth_deg, altitude_deg, and whether each pixel falls inside V1.
+
 ---
 
 ## What Each Step Is Doing
@@ -689,6 +703,36 @@ produced by step 5_A or 5_B — no step 7 thresholding involved.
   2 µA red, 3 µA blue, ... 7 µA), plus a `.mat` with the raw per-current
   traces and their own `t_s` vectors
 - Outputs go to `save_dir/ch{N}_temporal/`
+
+### Step 9 — Receptive field lookup for clicked pixels *(optional)*
+
+[receptive_field_lookup_9.m](analysis/longitudinal_stim_parameter_survey/receptive_field_lookup_9.m)
+
+Answers "what receptive field is this cortical pixel's response coming
+from?" using the retinotopic alignment step 6 already computed — no new
+retinotopy computation happens here, this is a lookup.
+
+- Loads a `day_setup.mat` from step 6 and pulls
+  `retino_align.azi_stim`, `.alt_stim` (both H×W, deg), and optionally
+  `.V1_mask_stim`
+- Loads one dF/F `.mat` from step 5_A or 5_B (per-trial or trial-averaged;
+  `dff_movie` / `mean_dff_movie` + `t_s`) to use as a clickable reference
+  map; its H×W must match the retino maps (both come from the same
+  stim-space pixel grid)
+- Builds a reference frame from the movie's most active post-stim frame
+  (autoscaled, jet colormap, optional V1 overlay), then opens the same
+  time-slider pixel-picking viewer used in steps 7_A/7_B/8 (left-click add,
+  right-click/`u` undo, Enter/Escape finish)
+- For each picked pixel `(row, col)`, reads off
+  `azimuth_deg = azi_stim(row,col)` and `altitude_deg = alt_stim(row,col)`
+  directly — this *is* the receptive field center assigned to that pixel
+  by step 6 (population-level, since this is widefield imaging pooling many
+  neurons/columns). Pixels outside the retinotopic map's warped coverage
+  read as NaN
+- Saves one 3-panel summary figure (dF/F reference map, azimuth map,
+  altitude map — picked pixels numbered on all three, V1 boundary overlaid
+  on the retino panels) plus a `.csv` and `.mat` table with columns
+  `pixel_index, row, col, azimuth_deg, altitude_deg, inside_V1`
 
 ---
 

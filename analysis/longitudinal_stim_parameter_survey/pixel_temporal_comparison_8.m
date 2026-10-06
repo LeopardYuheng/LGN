@@ -1,16 +1,18 @@
 %% pixel_temporal_comparison_8.m
-% Step 8: Pixelwise dF/F(t) comparison across stimulation currents, same channel.
+% Step 8: Circle-of-interest dF/F(t) comparison across stimulation currents, same channel.
 %
 % Reads the trial-averaged dF/F movies produced by step 5_A (Method 0,
 % mean_dff_ch{N}_{I}uA.mat) or step 5_B (Method 1, mean_dff_m1_ch{N}_{I}uA.mat),
 % lets the user pick ONE channel, auto-discovers every current level available
-% for that channel, then lets the user click pixel(s) on a reference dF/F map.
+% for that channel, then lets the user draw one or more circular regions of
+% interest (ROIs) on a reference dF/F map.
 %
-% For each picked pixel, one figure is produced with dF/F(t) traces for every
+% For each drawn circle, one figure is produced with dF/F(t) traces for every
 % current of the selected channel overlaid — one line color per current
 % (e.g. 0 uA green, 2 uA red, 3 uA blue, ... 7 uA — colors are assigned
 % automatically, in ascending current order, from a fixed qualitative
-% palette).
+% palette). Each trace is the mean dF/F, at every time point, averaged over
+% all in-mask (non-NaN) pixels inside that circle.
 %
 % Optional V1 boundary overlay (from step 6 day_setup), same convention as
 % steps 5_A/5_B/7_A/7_B.
@@ -21,6 +23,7 @@ close all; clc; clear; fclose('all');
 % USER SETTINGS
 % -------------------------
 mask_color_outside = [0.15 0.15 0.15];
+stim_win_s         = [0 0.5];   % stimulation time window shaded on dF/F(t) plots
 
 %% -------------------------
 % SELECT METHOD (5_A vs 5_B output)
@@ -139,7 +142,7 @@ end
 cur_colors = assign_current_colors(n_cur);
 
 %% -------------------------
-% REFERENCE MAP FOR PIXEL PICKING
+% REFERENCE MAP FOR ROI PICKING
 % Uses the highest-current condition's most active post-stim frame.
 % -------------------------
 [~, ref_i] = max(curs);
@@ -162,21 +165,20 @@ fprintf('\nReference map: Ch %d | %g uA | peak frame t = %+.2f s\n', ...
     sel_channel, curs(ref_i), ref_t(peak_frame_idx));
 
 %% -------------------------
-% INTERACTIVE PIXEL PICKING (with time slider on the reference condition)
+% INTERACTIVE CIRCLE-OF-INTEREST PICKING (with time slider on the reference condition)
 % -------------------------
-picked = pick_pixels_on_reference(ref_movie, ref_always_nan_mask, ref_t, peak_frame_idx, ...
+circles = pick_circles_on_reference(ref_movie, ref_always_nan_mask, ref_t, peak_frame_idx, ...
     clim_bg, ref_cmap, mask_color_outside, V1_mask, v1_outline_color, ...
     sprintf('Ch %d  |  reference: %g uA', sel_channel, curs(ref_i)));
 
-if isempty(picked)
-    fprintf('No pixels picked. Nothing to plot.\n');
+if isempty(circles)
+    fprintf('No circle(s) drawn. Nothing to plot.\n');
 else
-    fprintf('Generating dF/F(t) across-current comparison for %d picked pixel(s)...\n', size(picked,1));
-    for pi = 1:size(picked, 1)
-        row = picked(pi, 1); col = picked(pi, 2);
-        plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, ch_save_dir, is_m1, ...
+    fprintf('Generating dF/F(t) across-current comparison for %d circle(s) of interest...\n', numel(circles));
+    for ci = 1:numel(circles)
+        plot_circle_across_currents(conditions, cur_colors, circles(ci), sel_channel, ch_save_dir, is_m1, ...
             peak_img, ref_always_nan_mask, clim_bg, ref_cmap, mask_color_outside, ...
-            V1_mask, v1_outline_color, ref_title);
+            V1_mask, v1_outline_color, ref_title, stim_win_s);
     end
 end
 
@@ -234,17 +236,19 @@ for c = 1:3
 end
 end
 
-function picked = pick_pixels_on_reference(movie, always_nan_mask, t_s, peak_idx, ...
+function circles = pick_circles_on_reference(movie, always_nan_mask, t_s, peak_idx, ...
     clim_range, cmap, mask_color, V1_mask, v1_color, title_str)
-% Time-slider viewer over one reference dF/F movie. Click pixels to pick
-% them for the across-current dF/F(t) plots:
-%   left-click        -> add the clicked pixel
-%   right-click / 'u'  -> undo the most recent pick
-%   Enter / Escape     -> finish picking and close the figure
-% Returns an N x 2 matrix of [row, col] picked pixels (possibly empty).
+% Time-slider viewer over one reference dF/F movie. Draw circular ROIs to
+% define one or more "circle of interest" regions for the across-current
+% dF/F(t) comparison:
+%   - Drag out a circle, then double-click or press Enter to confirm it.
+%   - After each circle, choose to add another, undo the last one, or finish.
+% Returns a struct array circles(k).center [x y], .radius, .mask (H x W
+% logical, in-image-coordinate circular mask — NOT yet intersected with
+% always_nan_mask; that is handled per-condition when averaging traces).
 [H, W, T] = size(movie);
 
-fig = figure('Color', 'w', 'Name', ['Pick pixels — ' title_str], ...
+fig = figure('Color', 'w', 'Name', ['Draw circle(s) of interest — ' title_str], ...
     'Position', [80 80 780 700]);
 ax = axes(fig, 'Position', [0.10 0.12 0.78 0.80]);
 
@@ -265,38 +269,36 @@ uicontrol(fig, 'Style', 'slider', 'Units', 'normalized', ...
     'Callback', @(src, ~) set_ref_frame(img, th, movie, always_nan_mask, t_s, ...
         clim_range, cmap, mask_color, title_str, get(src, 'Value')));
 
-sgtitle(fig, ['Click pixels to pick them for dF/F(t) plots   |   ' ...
-    'left-click: add pixel   \cdot   right-click or ''u'': undo last   \cdot   Enter: done']);
+sgtitle(fig, ['Drag out a circle of interest, then double-click / Enter to confirm.']);
 
-picked  = zeros(0, 2);
-markers = gobjects(0, 1);
+[xx, yy] = meshgrid(1:W, 1:H);
+circles = struct('center', {}, 'radius', {}, 'mask', {}, 'roi', {});
 
-while true
-    [x, y, button] = ginput(1);
-    if isempty(button)
-        break;   % figure closed by the user
+while isvalid(fig)
+    h_circ = drawcircle(ax, 'Color', [1 1 0], 'LineWidth', 1.6, 'FaceAlpha', 0.08);
+    wait(h_circ);
+    if ~isvalid(h_circ)
+        break;   % figure closed while drawing
     end
 
-    if button == 1   % left click -> add picked pixel
-        row = round(y);
-        col = round(x);
-        if row < 1 || row > H || col < 1 || col > W
-            continue;
-        end
-        picked(end + 1, :) = [row, col];                                       %#ok<AGROW>
-        markers(end + 1)   = plot(ax, col, row, 'w+', 'MarkerSize', 12, 'LineWidth', 1.6); %#ok<AGROW>
-        fprintf('  Picked pixel (%d, %d)   [%d selected]\n', row, col, size(picked, 1));
+    c = h_circ.Center;
+    r = h_circ.Radius;
+    m = ((xx - c(1)).^2 + (yy - c(2)).^2) <= r^2;
 
-    elseif button == 3 || button == double('u') || button == 8   % undo last pick
-        if ~isempty(picked)
-            delete(markers(end));
-            markers(end, :) = [];
-            picked(end, :)  = [];
-            fprintf('  Undid last pick   [%d remaining]\n', size(picked, 1));
-        end
+    circles(end + 1) = struct('center', c, 'radius', r, 'mask', m, 'roi', h_circ); %#ok<AGROW>
+    n_px = sum(m(:) & ~always_nan_mask(:));
+    fprintf('  Circle %d: center (%.1f, %.1f), radius %.1f px, %d in-mask pixel(s)\n', ...
+        numel(circles), c(1), c(2), r, n_px);
 
-    elseif button == 13 || button == 27   % Enter / Escape -> done
+    if ~isvalid(fig), break; end
+    choice = questdlg('Circle of interest added.', 'Circle of interest', ...
+        'Add another', 'Undo last', 'Done', 'Done');
+    if isempty(choice) || strcmp(choice, 'Done')
         break;
+    elseif strcmp(choice, 'Undo last')
+        if isvalid(circles(end).roi), delete(circles(end).roi); end
+        circles(end) = [];
+        fprintf('  Undid last circle   [%d remaining]\n', numel(circles));
     end
 end
 
@@ -310,17 +312,31 @@ set(img, 'CData', dff_frame_to_rgb(movie(:,:,k), always_nan_mask, clim_range, cm
 set(th, 'String', sprintf('%s | t = %+.2f s', title_str, t_s(k)));
 end
 
-function plot_pixel_across_currents(conditions, cur_colors, row, col, sel_channel, save_dir, is_m1, ...
-    ref_img, ref_mask, ref_clim, ref_cmap, mask_color, V1_mask, v1_color, ref_title)
-% Two-panel figure: left = reference dF/F map with the picked pixel marked,
-% right = dF/F(t) at (row, col) overlaid for every current level.
+function trace = roi_mean_trace(movie, roi_mask)
+% Mean dF/F within roi_mask at every frame, ignoring NaN (out-of-brain)
+% pixels. NaN if the ROI contains no finite in-mask pixels for that frame.
+[H, W, T] = size(movie);
+flat  = reshape(movie, H * W, T);
+sel   = flat(roi_mask(:), :);
+trace = mean(sel, 1, 'omitnan')';
+end
+
+function plot_circle_across_currents(conditions, cur_colors, circle, sel_channel, save_dir, is_m1, ...
+    ref_img, ref_mask, ref_clim, ref_cmap, mask_color, V1_mask, v1_color, ref_title, stim_win_s)
+% Two-panel figure: left = reference dF/F map with the circle of interest
+% outlined, right = mean dF/F(t) within that circle overlaid for every
+% current level. The stimulation window (stim_win_s) is shaded with a
+% light patch and bounded by dashed vertical lines.
 [H, W] = size(ref_img);
 method_tag = '';
 if is_m1, method_tag = ' (Method 1)'; end
 
+cx = circle.center(1); cy = circle.center(2); cr = circle.radius;
+roi_mask = circle.mask;
+
 fig = figure('Color', 'w', 'Position', [60 80 1220 480]);
 
-% --- Left: reference map with the picked pixel marked ---
+% --- Left: reference map with the circle of interest outlined ---
 ax1 = subplot(1, 2, 1);
 image(ax1, dff_frame_to_rgb(ref_img, ref_mask, ref_clim, ref_cmap, mask_color));
 axis(ax1, 'image'); axis(ax1, 'off'); set(ax1, 'YDir', 'normal'); hold(ax1, 'on');
@@ -329,46 +345,58 @@ if ~isempty(V1_mask) && isequal(size(V1_mask), [H W])
     visboundaries(ax1, V1_mask, 'Color', v1_color, 'LineWidth', 1.0);
 end
 colormap(ax1, ref_cmap); clim(ax1, ref_clim); colorbar(ax1);
-plot(ax1, col, row, 'ko', 'MarkerSize', 16, 'LineWidth', 1.2);
-plot(ax1, col, row, 'w+', 'MarkerSize', 14, 'LineWidth', 2.0);
+viscircles(ax1, [cx cy], cr, 'Color', [1 1 0], 'LineWidth', 1.6);
 title(ax1, ref_title, 'Interpreter', 'none', 'FontSize', 10);
 
-% --- Right: dF/F(t) overlaid across currents ---
+% --- Right: mean dF/F(t) within the circle, overlaid across currents ---
 ax2 = subplot(1, 2, 2);
 hold(ax2, 'on');
-xline(ax2, 0, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1);
 
 n_cur   = numel(conditions);
 handles = gobjects(n_cur, 1);
 labels  = cell(n_cur, 1);
 for i = 1:n_cur
-    trace = squeeze(conditions(i).movie(row, col, :));
+    trace = roi_mean_trace(conditions(i).movie, roi_mask);
     handles(i) = plot(ax2, conditions(i).t_s, trace, '-', ...
         'Color', cur_colors(i, :), 'LineWidth', 1.5);
     labels{i} = sprintf('%g uA', conditions(i).current_uA);
 end
 
+% Shade the stimulation window and mark its edges with dashed lines
+yl = ylim(ax2);
+h_stim = patch(ax2, stim_win_s([1 2 2 1]), yl([1 1 2 2]), [1.00 0.80 0.40], ...
+    'FaceAlpha', 0.25, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+uistack(h_stim, 'bottom');
+xline(ax2, stim_win_s(1), '--', 'Color', [0.4 0.4 0.4], 'LineWidth', 1, 'HandleVisibility', 'off');
+xline(ax2, stim_win_s(2), '--', 'Color', [0.4 0.4 0.4], 'LineWidth', 1, 'HandleVisibility', 'off');
+ylim(ax2, yl);
+
 xlabel(ax2, 'Time relative to stimulation onset (s)');
-ylabel(ax2, '\DeltaF/F');
-title(ax2, sprintf('dF/F(t) for pixel (%d,%d)  |  Ch %d%s', row, col, sel_channel, method_tag), ...
-    'Interpreter', 'none');
+ylabel(ax2, 'Mean \DeltaF/F (circle of interest)');
+title(ax2, sprintf('Mean dF/F(t)  |  circle at (%.0f,%.0f), r=%.0f px  |  Ch %d%s', ...
+    cx, cy, cr, sel_channel, method_tag), 'Interpreter', 'none');
 legend(ax2, handles, labels, 'Location', 'best', 'Box', 'off');
 grid(ax2, 'on'); box(ax2, 'on');
 
-sgtitle(fig, sprintf('Ch %d  |  pixel (%d,%d)%s', sel_channel, row, col, method_tag), ...
-    'Interpreter', 'none');
+sgtitle(fig, sprintf('circle of interest at (%.0f,%.0f), r=%.0f px  |  Ch %d%s', ...
+    cx, cy, cr, sel_channel, method_tag), 'Interpreter', 'none');
 
 fname_tag = 'dff_t';
 if is_m1, fname_tag = [fname_tag '_m1']; end
-fig_fname = sprintf('%s_pixel_r%d_c%d_ch%d_all_currents.png', fname_tag, row, col, sel_channel);
+fig_fname = sprintf('%s_circle_x%.0f_y%.0f_r%.0f_ch%d_all_currents.png', ...
+    fname_tag, cx, cy, cr, sel_channel);
 exportgraphics(fig, fullfile(save_dir, fig_fname), 'Resolution', 150);
 close(fig);
 fprintf('  Saved figure: %s\n', fig_fname);
 
-mat_fname = sprintf('%s_pixel_r%d_c%d_ch%d_all_currents.mat', fname_tag, row, col, sel_channel);
-currents_uA = arrayfun(@(c) c.current_uA, conditions)'; %#ok<NASGU>
-traces      = arrayfun(@(c) squeeze(c.movie(row, col, :)), conditions, 'UniformOutput', false); %#ok<NASGU>
-t_s_all     = arrayfun(@(c) c.t_s, conditions, 'UniformOutput', false); %#ok<NASGU>
-save(fullfile(save_dir, mat_fname), 'currents_uA', 'traces', 't_s_all', 'row', 'col', 'sel_channel');
+mat_fname = sprintf('%s_circle_x%.0f_y%.0f_r%.0f_ch%d_all_currents.mat', ...
+    fname_tag, cx, cy, cr, sel_channel);
+currents_uA  = arrayfun(@(c) c.current_uA, conditions)'; %#ok<NASGU>
+traces       = arrayfun(@(c) roi_mean_trace(c.movie, roi_mask), conditions, 'UniformOutput', false); %#ok<NASGU>
+t_s_all      = arrayfun(@(c) c.t_s, conditions, 'UniformOutput', false); %#ok<NASGU>
+circle_center = circle.center; %#ok<NASGU>
+circle_radius = circle.radius; %#ok<NASGU>
+save(fullfile(save_dir, mat_fname), 'currents_uA', 'traces', 't_s_all', ...
+    'roi_mask', 'circle_center', 'circle_radius', 'sel_channel');
 fprintf('  Saved data:   %s\n', mat_fname);
 end
